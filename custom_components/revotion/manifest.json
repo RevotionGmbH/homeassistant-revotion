@@ -1,0 +1,15 @@
+{
+  "domain": "revotion",
+  "name": "Revotion",
+  "codeowners": ["@TimLondong"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/RevotionGmbH/homeassistant-revotion",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/RevotionGmbH/homeassistant-revotion/issues",
+  "loggers": ["custom_components.revotion", "aiomqtt"],
+  "requirements": ["aiomqtt>=2.0.0,<3.0"],
+  "single_config_entry": false,
+  "version": "0.4.0b0"
+}

@@ -1,0 +1,47 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  syntax:
+    name: Syntax (Python 3.13)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # The declared minimum HA version (hacs.json) runs on Python 3.13 --
+      # 3.14-only syntax (e.g. unparenthesized PEP 758 except clauses) must
+      # fail here instead of on a user's install.
+      - run: python -m compileall -q custom_components/revotion/
+
+  validate-hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    # HACS validation needs repository properties (topics, brands, release)
+    # that only exist on the published repository.
+    if: github.repository == 'RevotionGmbH/homeassistant-revotion'
+    steps:
+      - name: HACS validation
+        uses: hacs/action@main
+        with:
+          category: integration
