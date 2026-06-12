@@ -68,6 +68,8 @@ ECOFLOW_DESCRIPTOR = ConnectDeviceDescriptor(
             array_key="pwr",
             key_prefix="channel_power",
             name_prefix="Channel power",
+            # Firmware always serializes exactly 5 channels (form_ecoflow_data_json).
+            max_elements=5,
             device_class="power",
             unit="W",
         ),

@@ -95,7 +95,9 @@ FRIDGE_DESCRIPTOR = ConnectDeviceDescriptor(
     numbers=(
         NumberSpec(
             key="fan_speed",
-            name="Fan speed",
+            # App label "Cooling level" (de: "Kühlstufe") -- the wire field is
+            # fan_speed, but it sets the cooling intensity, not a fan.
+            name="Cooling level",
             path="fan_speed",
             write_path="fan_speed",
             min_value=1,

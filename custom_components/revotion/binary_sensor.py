@@ -17,8 +17,8 @@ from .connect import (
     get_descriptor,
     has_descriptor,
     int01_to_bool,
-    read_dev_data_array,
     read_dev_data_path,
+    reconcile_gated_entities,
     resolve_connect_device,
 )
 from .connect.descriptors import ArrayBinarySensorSpec, BinarySensorSpec, ControlLockSpec
@@ -130,18 +130,44 @@ async def async_setup_entry(
     # Connect (Type 12) deferred discovery: only devices with a tailored
     # descriptor produce binary_sensors here (generic devices mirror everything
     # through sensor.py). Track at (node_mac, cap_index, key) granularity so
-    # array elements appearing in later messages are picked up exactly once and
-    # a re-paired node recreates its entities. Keys are spec.key for fixed
-    # sensors and "{key_prefix}_{n}" for array elements -- both unique per cap.
+    # entities appearing in later messages are picked up exactly once and a
+    # re-paired node recreates its entities. Fixed sensors (spec.key) stay
+    # additive; array elements ("{key_prefix}_{n}") are *reconciled* against the
+    # array length so sensors deleted in the app disappear here too.
     known_connect_keys: set[tuple[str, int, str]] = set()
+    brain_norm = normalize_mac(brain_mac)
+    array_entities: dict[tuple[str, int, str], BinarySensorEntity] = {}
+
+    def _make_array_binary_sensor(node, capability, array_spec, index):
+        """Bind a per-element factory (own scope avoids late-binding in the loop)."""
+
+        def factory() -> RevotionConnectArrayBinarySensor:
+            register_node_device(hass, entry, node, brain_mac)
+            return RevotionConnectArrayBinarySensor(
+                coordinator=coordinator,
+                brain_mac=brain_mac,
+                node_mac=node.mac_address,
+                cap_index=capability.capability_index,
+                spec=array_spec,
+                index=index,
+                config_name=capability.config.name,
+            )
+
+        return factory
 
     def _check_connect() -> None:
         """Create descriptor-driven binary sensors once a device code resolves.
 
-        Fixed-path BinarySensorSpecs map one dev_data leaf each; ArrayBinarySensorSpecs
-        expand to one entity per array element, growing with the array length in
-        the data. Every entity owns a fixed key, so there is no value-dependent
-        routing and no unique_id collision (Phase 0 review blocker B1).
+        Fixed-path BinarySensorSpecs map one dev_data leaf each (additive).
+        ArrayBinarySensorSpecs expand to one entity per array element and are
+        reconciled against the array length: the Thitronik ``stat[]``/``bat[]``
+        arrays always carry exactly the currently paired sensors, so a shrink
+        means sensors were deleted in the app -- their entities are removed
+        (live + registry row) instead of lingering as "unavailable" ghosts.
+        Indices are swept up to the spec's firmware bound so ghost rows from an
+        earlier session are also cleaned after a restart. Every entity owns a
+        fixed key, so there is no value-dependent routing and no unique_id
+        collision (Phase 0 review blocker B1).
         """
         if coordinator.data is None:
             return
@@ -151,6 +177,7 @@ async def async_setup_entry(
         known_connect_keys.difference_update(stale)
 
         entities: list[BinarySensorEntity] = []
+        array_candidates = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
             for capability in node.capabilities:
@@ -179,22 +206,31 @@ async def async_setup_entry(
                     )
 
                 for array_spec in descriptor.array_binary_sensors:
-                    elements = read_dev_data_array(capability, array_spec.array_key)
-                    for index in range(len(elements)):
-                        element_key = f"{array_spec.key_prefix}_{index + 1}"
-                        key = (node_mac, capability.capability_index, element_key)
-                        if key in known_connect_keys:
-                            continue
-                        known_connect_keys.add(key)
-                        entities.append(
-                            RevotionConnectArrayBinarySensor(
-                                coordinator=coordinator,
-                                brain_mac=brain_mac,
-                                node_mac=node.mac_address,
-                                cap_index=capability.capability_index,
-                                spec=array_spec,
-                                index=index,
-                                config_name=capability.config.name,
+                    # Only an array actually present in dev_data is authoritative
+                    # (the firmware always serializes the full array, so its
+                    # length == paired sensors). Absent -- e.g. no /data message
+                    # yet after a restart -- means "no information": skip, so
+                    # the reconcile never wipes registry rows (and the user's
+                    # renames/areas) on a data-less startup window.
+                    elements = read_dev_data_path(capability, array_spec.array_key)
+                    if not isinstance(elements, list):
+                        continue
+                    # Sweep the full firmware range, not just len(elements):
+                    # indices beyond the current length yield present=False so
+                    # their entities/ghost rows are removed by the reconcile.
+                    for index in range(array_spec.max_elements):
+                        number = index + 1
+                        key = (node_mac, capability.capability_index, f"{array_spec.key_prefix}_{number}")
+                        unique_id = (
+                            f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}"
+                            f"_{array_spec.key_prefix}_{number}"
+                        )
+                        array_candidates.append(
+                            (
+                                key,
+                                index < len(elements),
+                                unique_id,
+                                _make_array_binary_sensor(node, capability, array_spec, index),
                             )
                         )
 
@@ -216,6 +252,15 @@ async def async_setup_entry(
 
         if entities:
             async_add_entities(entities)
+
+        reconcile_gated_entities(
+            hass=hass,
+            entity_domain="binary_sensor",
+            entities=array_entities,
+            current_macs=current_macs,
+            candidates=array_candidates,
+            async_add_entities=async_add_entities,
+        )
 
     def _on_update() -> None:
         """Coordinator listener: run both standard and Connect discovery."""
@@ -418,7 +463,8 @@ class RevotionConnectArrayBinarySensor(
     Created from an :class:`ArrayBinarySensorSpec` -- one entity per element of
     a ``dev_data`` array (Thitronik ``stat[]`` magnet contacts, ``bat[]`` sensor
     batteries). The element is read by index; if a later message shrinks the
-    array below this index the value reads as unknown.
+    array below this index the discovery reconcile removes the entity (the
+    sensor was deleted in the app).
     """
 
     _attr_has_entity_name = True

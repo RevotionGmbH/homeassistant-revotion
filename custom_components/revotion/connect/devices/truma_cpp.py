@@ -252,6 +252,9 @@ TRUMA_CPP_DESCRIPTOR = ConnectDeviceDescriptor(
             option_to_value={"eco": 40, "hot": 60},
             lock_path="heater.dev_stat",
         ),
+        # The app gates the heater Energy section (dropdown + p_lim) on
+        # heater.energy_en (truma_heater_section.dart) -- same as the Combi's
+        # energyEnabled. Both selects presence-gated on it.
         SelectSpec(
             key="heater_energy",
             name="Heater energy source",
@@ -260,6 +263,7 @@ TRUMA_CPP_DESCRIPTOR = ConnectDeviceDescriptor(
             options=("gas", "electric", "both"),
             option_to_value={"gas": ENERGY_GAS, "electric": ENERGY_ELECTRIC, "both": ENERGY_BOTH},
             lock_path="heater.dev_stat",
+            available_path="heater.energy_en",
         ),
         SelectSpec(
             key="heater_water_power",
@@ -270,6 +274,7 @@ TRUMA_CPP_DESCRIPTOR = ConnectDeviceDescriptor(
             option_to_value={"900_w": P_LIM_900, "1800_w": P_LIM_1800},
             entity_category="config",
             lock_path="heater.dev_stat",
+            available_path="heater.energy_en",
         ),
     ),
     # Per sub-device control lock: heater entities lock on heater.dev_stat 6/7,

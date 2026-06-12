@@ -18,12 +18,15 @@ are serialized on the wire as 0/1 integers (see :mod:`..coding`):
     stat[]        0/1[]  -- per-sensor magnet-contact status (parallel to bat[])
 
 Control is a single opaque command code on ``ctr_data``
-(``dev_data: {"command": <code>}``): arm=72, disarm=170, lock=87, unlock=88
-(``ThitronikCommands`` enum / firmware ``node_payload_schemas.md``).
+(``dev_data: {"command": <code>}``): arm=72, disarm=170, lock=87, unlock=88,
+triggerAlarm=115 (``ThitronikCommands`` enum / firmware
+``node_payload_schemas.md``).
 
-Deliberately NOT modelled in Phase 1: the ``triggerAlarm`` (115) command --
-a button that fires the alarm is too easy to trip accidentally; omitted on
-purpose (see the task brief / docs §6 "optional, mit Vorsicht").
+``triggerAlarm`` (115) is the app's panic tile (PanikWidget): it fires the
+siren immediately. Surfaced twice -- as the panel's TRIGGER feature
+(``alarm_control_panel.alarm_trigger``, for automations) and as a "Panic
+alarm" button entity mirroring the app tile. Confirmation for both is the
+``alarm`` flag flipping to 1.
 """
 
 from __future__ import annotations
@@ -33,8 +36,10 @@ from ..descriptors import (
     AlarmPanelSpec,
     ArrayBinarySensorSpec,
     BinarySensorSpec,
+    ButtonSpec,
     ConnectDeviceDescriptor,
     ControlLockSpec,
+    EnumSensorSpec,
     LockSpec,
     SensorSpec,
 )
@@ -48,6 +53,36 @@ COMMAND_ARM = 72
 COMMAND_DISARM = 170
 COMMAND_LOCK = 87
 COMMAND_UNLOCK = 88
+COMMAND_TRIGGER_ALARM = 115
+
+# The app's radio-sensor type dropdown (thitronik_dropdown_items.dart), in
+# order -- the per-sensor ``app_type`` config indices point into this list.
+# English app labels; surfaced as a (non-translatable) state attribute.
+THITRONIK_SENSOR_TYPE_LABELS = (
+    "Remote control",
+    "Magnetic contact",
+    "Roof window",
+    "Side window R",
+    "Side window L",
+    "Rear window",
+    "Gas sensor",
+    "Water sensor",
+    "Driver's door",
+    "Passenger door",
+    "Sliding door",
+    "Dinette",
+    "Bathroom",
+    "Bike rack",
+    "Roof rack",
+    "Rear rack",
+    "Gas alarm",
+    "Smoke detector",
+    "Cable loop",
+    "Heki",
+    "Rear garage",
+    "Sliding door",
+    "Drawer",
+)
 
 THITRONIK_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.THITRONIK,
@@ -59,10 +94,31 @@ THITRONIK_DESCRIPTOR = ConnectDeviceDescriptor(
             name="Device status",
             entity_category="diagnostic",
         ),
-        SensorSpec(
+    ),
+    enum_sensors=(
+        # The app's alarm-reason mapping (thitronik_alarm_reason_items.dart):
+        # 1-31 = index of the triggered radio sensor (type resolved via the
+        # app_type config list), fixed codes for the built-in triggers.
+        EnumSensorSpec(
             path="alarm_reason",
             key="alarm_reason",
             name="Alarm reason",
+            translation_key="thitronik_alarm_reason",
+            value_map=(
+                (0, "none"),
+                (32, "break_in_door_interior_light"),
+                (33, "break_in_door_can_bus"),
+                (36, "gas_detector"),
+                (37, "jammer_detection"),
+                (38, "radio_cable_loop"),
+                (40, "radio_water_detector"),
+                (43, "radio_gas_detector_co"),
+                (224, "sms_alarm"),
+                (225, "panic_alarm"),
+            ),
+            sensor_range=(1, 31),
+            sensor_type_config_key="app_type",
+            sensor_type_labels=THITRONIK_SENSOR_TYPE_LABELS,
             entity_category="diagnostic",
         ),
     ),
@@ -102,6 +158,10 @@ THITRONIK_DESCRIPTOR = ConnectDeviceDescriptor(
             array_key="stat",
             key_prefix="contact",
             name_prefix="Contact",
+            # Firmware caps stat[]/bat[] at 30 sensors (serialization_encode.c
+            # form_thitronik_data_json); the array length always equals the
+            # number of currently paired sensors, so shrinking == deleted.
+            max_elements=30,
             device_class="opening",
         ),
         # Per-sensor battery health (firmware ``thitronik_sensor.battery``,
@@ -114,6 +174,7 @@ THITRONIK_DESCRIPTOR = ConnectDeviceDescriptor(
             array_key="bat",
             key_prefix="sensor_battery",
             name_prefix="Sensor battery",
+            max_elements=30,
             device_class="battery",
             entity_category="diagnostic",
         ),
@@ -125,6 +186,18 @@ THITRONIK_DESCRIPTOR = ConnectDeviceDescriptor(
         alarm_path="alarm",
         arm_away_command=COMMAND_ARM,
         disarm_command=COMMAND_DISARM,
+        trigger_command=COMMAND_TRIGGER_ALARM,
+    ),
+    buttons=(
+        # The app's panic tile: fire the siren immediately. Confirmed (and the
+        # command lock released) once the alarm flag reports 1.
+        ButtonSpec(
+            key="panic",
+            name="Panic alarm",
+            command=COMMAND_TRIGGER_ALARM,
+            confirm_path="alarm",
+            icon="mdi:alarm-light",
+        ),
     ),
     lock=LockSpec(
         key="lock",

@@ -126,15 +126,19 @@ ALDE_DESCRIPTOR = ConnectDeviceDescriptor(
             hvac_to_state={HVAC_OFF: 0, HVAC_HEAT: 1},
         ),
     ),
+    # Feature-flag gating mirrors the app dialog (alde_tile_dialog.dart): gas
+    # switch behind gas_av, fuel power behind fuel_av, AC automatic control
+    # behind ac1_present. Electric power is ungated there too.
     switches=(
         SwitchSpec(key="water", name="Water heater", path="water_state", write_key="water_state"),
-        SwitchSpec(key="gas", name="Gas", path="gas_running", write_key="gas_running"),
+        SwitchSpec(key="gas", name="Gas", path="gas_running", write_key="gas_running", available_path="gas_av"),
         SwitchSpec(
             key="ac_auto_control",
             name="AC automatic control",
             path="ac_auto_ctr",
             write_key="ac_auto_ctr",
             entity_category="config",
+            available_path="ac1_present",
         ),
     ),
     numbers=(
@@ -161,6 +165,7 @@ ALDE_DESCRIPTOR = ConnectDeviceDescriptor(
             unit="kW",
             mode="slider",
             as_int=True,
+            available_path="fuel_av",
         ),
     ),
     selects=(
@@ -177,11 +182,11 @@ ALDE_DESCRIPTOR = ConnectDeviceDescriptor(
             name="Water setting",
             path="water_setting",
             write_path="water_setting",
-            # "auto" is only meaningful when water_auto_av; the descriptor can't
-            # gate per-option, so all four are offered (TO VERIFY: hide auto when
-            # water_auto_av is 0 if the firmware rejects it).
             options=("off", "normal", "boost", "auto"),
             option_to_value={"off": WATER_OFF, "normal": WATER_NORMAL, "boost": WATER_BOOST, "auto": WATER_AUTO},
+            # The app offers "Auto" only when water_auto_av (or it is the
+            # current setting); same per-option gate here.
+            option_av_flags={"auto": "water_auto_av"},
         ),
     ),
     # Control is locked while the Alde's own panel is in use / shows an error

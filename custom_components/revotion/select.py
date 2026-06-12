@@ -19,7 +19,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .connect import get_descriptor, has_descriptor, read_dev_data_path, resolve_connect_device
+from .connect import (
+    get_descriptor,
+    has_descriptor,
+    is_path_available,
+    read_dev_data_path,
+    reconcile_gated_entities,
+    resolve_connect_device,
+)
 from .connect.control import ConnectCommandMixin, set_dev_data_path
 from .connect.descriptors import SelectSpec
 from .connect.entity import resolve_entity_category
@@ -68,13 +75,46 @@ class RevotionConnectSelect(
         self._attr_device_info = {"identifiers": {(DOMAIN, self._node_mac)}}
         # has_entity_name=True: device carries the name, entity is just the field.
         self._attr_name = spec.name
-        self._attr_options = list(spec.options)
+        # Options stay machine values (state strings for automations); the
+        # frontend renders them via entity.select.connect_select.state.<option>.
+        self._attr_translation_key = "connect_select"
         self._attr_entity_category = resolve_entity_category(spec.entity_category)
 
     @property
     def available(self) -> bool:
-        """Return True if the node is reachable and the capability exists."""
-        return super().available and self._node_reachable() and self._find_capability() is not None
+        """Return True if the capability exists and (if gated) is available.
+
+        ``available_path`` gates feature-flagged selects (Truma Combi
+        ``energyEnabled``). These are *presence-gated*: the discovery listener
+        removes the entity outright when the flag is falsy, so this is mainly a
+        safety net for the brief window before removal.
+        """
+        cap = self._find_capability()
+        if not (super().available and self._node_reachable() and cap is not None):
+            return False
+        return is_path_available(cap, self._spec.available_path)
+
+    @property
+    def options(self) -> list[str]:
+        """Offered options, filtered by per-option availability flags.
+
+        The currently selected option is always offered even if its flag is off
+        (mirrors the app's ``waterAutoAvailable || selected`` -- the dropdown
+        must be able to display the device's actual state). HA's select_option
+        service validates against this list, so a gated-off option is also
+        rejected on write.
+        """
+        if not self._spec.option_av_flags:
+            return list(self._spec.options)
+        cap = self._find_capability()
+        if cap is None:
+            return list(self._spec.options)
+        current = self.current_option
+        return [
+            option
+            for option in self._spec.options
+            if option == current or is_path_available(cap, self._spec.option_av_flags.get(option))
+        ]
 
     @property
     def current_option(self) -> str | None:
@@ -109,7 +149,10 @@ class RevotionConnectSelect(
 
     async def async_select_option(self, option: str) -> None:
         """Set the option by publishing its mapped raw value at write_path."""
-        if option not in self._spec.option_to_value:
+        # self.options (not spec.options): a flag-gated option must not be
+        # writable while hidden. HA's service layer validates the same list;
+        # this is the safety net for direct calls.
+        if option not in self._spec.option_to_value or option not in self.options:
             return
         dev_data: dict[str, Any] = {}
         set_dev_data_path(dev_data, self._spec.write_path, self._spec.option_to_value[option])
@@ -129,17 +172,38 @@ async def async_setup_entry(
     coordinator = entry.runtime_data.coordinator
     mqtt_client = entry.runtime_data.mqtt_client
     brain_mac = entry.data[CONF_BRAIN_MAC]
-    known: set[tuple[str, int, str]] = set()
+    brain_norm = normalize_mac(brain_mac)
+    # Presence-gated like Connect switches: each SelectSpec's available_path
+    # (Truma Combi energyEnabled, CP+ heater.energy_en) decides whether the
+    # entity should exist *now*, so the listener adds it when the flag turns on
+    # and removes it (live + registry) when it turns off. Tracked at
+    # (node, cap, key) granularity.
+    connect_entities: dict[tuple[str, int, str], RevotionConnectSelect] = {}
+
+    def _make_connect_select(node, capability, device_code, spec):
+        """Bind a per-spec factory (own scope avoids late-binding in the loop)."""
+
+        def factory() -> RevotionConnectSelect:
+            register_node_device(hass, entry, node, brain_mac)
+            return RevotionConnectSelect(
+                coordinator=coordinator,
+                brain_mac=brain_mac,
+                node_mac=node.mac_address,
+                cap_index=capability.capability_index,
+                device_code=device_code,
+                spec=spec,
+                mqtt_client=mqtt_client,
+                config_name=capability.config.name,
+            )
+
+        return factory
 
     def _check_connect() -> None:
-        """Create select entities for Connect devices whose descriptor defines them."""
+        """Reconcile presence-gated select entities for descriptor devices."""
         if coordinator.data is None:
             return
         current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
-        stale = {key for key in known if key[0] not in current_macs}
-        known.difference_update(stale)
-
-        entities: list[RevotionConnectSelect] = []
+        candidates = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
             for capability in node.capabilities:
@@ -152,25 +216,20 @@ async def async_setup_entry(
                 assert descriptor is not None
                 for spec in descriptor.selects:
                     key = (node_mac, capability.capability_index, spec.key)
-                    if key in known:
-                        continue
-                    known.add(key)
-                    register_node_device(hass, entry, node, brain_mac)
-                    entities.append(
-                        RevotionConnectSelect(
-                            coordinator=coordinator,
-                            brain_mac=brain_mac,
-                            node_mac=node.mac_address,
-                            cap_index=capability.capability_index,
-                            device_code=device_code,
-                            spec=spec,
-                            mqtt_client=mqtt_client,
-                            config_name=capability.config.name,
-                        )
+                    present = is_path_available(capability, spec.available_path)
+                    unique_id = f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}_{spec.key}"
+                    candidates.append(
+                        (key, present, unique_id, _make_connect_select(node, capability, device_code, spec))
                     )
 
-        if entities:
-            async_add_entities(entities)
+        reconcile_gated_entities(
+            hass=hass,
+            entity_domain="select",
+            entities=connect_entities,
+            current_macs=current_macs,
+            candidates=candidates,
+            async_add_entities=async_add_entities,
+        )
 
     _check_connect()
     entry.async_on_unload(coordinator.async_add_listener(_check_connect))

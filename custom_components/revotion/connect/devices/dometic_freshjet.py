@@ -20,6 +20,8 @@ confirmed against the app enums. Flat ``dev_data`` (not nested); booleans 0/1.
 
 Control (``decode_dom_freshjet_data_json`` reads): state, target_temp, ac_mode,
 fan_auto, fan_speed, ex_light, in_light, in_light_lv, sleep_mode. All top-level.
+sleep_mode is writable on the wire, but HA mirrors it read-only (binary sensor)
+by product decision -- it is managed from the AC panel/app, not switched remotely.
 
 HVAC mapping: state 0 -> OFF. Otherwise ac_mode via the app's ACMode.code:
 0 auto -> HEAT_COOL (Dometic auto holds a setpoint by heating OR cooling, which
@@ -43,7 +45,6 @@ from ..descriptors import (
     ConnectDeviceDescriptor,
     LightSpec,
     SensorSpec,
-    SwitchSpec,
 )
 
 HVAC_OFF = "off"
@@ -118,6 +119,14 @@ FRESHJET_DESCRIPTOR = ConnectDeviceDescriptor(
             name="Compressor running",
             device_class="running",
         ),
+        # Read-only by product decision (see module docstring); was a switch
+        # until 0.4.x -- the old switch.* registry row may linger on upgraded
+        # installs until deleted.
+        BinarySensorSpec(
+            path="sleep_mode",
+            key="sleep_mode",
+            name="Sleep mode",
+        ),
     ),
     climates=(
         ClimateSpec(
@@ -169,16 +178,12 @@ FRESHJET_DESCRIPTOR = ConnectDeviceDescriptor(
                 FAN_HIGH: SPEED_HIGH,
                 FAN_TURBO: SPEED_TURBO,
             },
+            # Not every FreshJet has the heating element; the app offers "heat"
+            # only when heater_av (dometic_freshjet_tile_widget.dart).
+            hvac_mode_av_flags={HVAC_HEAT: "heater_av"},
         ),
     ),
-    switches=(
-        SwitchSpec(
-            key="sleep_mode",
-            name="Sleep mode",
-            path="sleep_mode",
-            write_key="sleep_mode",
-        ),
-    ),
+    # No switches: sleep_mode is deliberately a read-only binary sensor.
     lights=(
         LightSpec(
             key="exterior_light",

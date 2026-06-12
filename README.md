@@ -42,11 +42,12 @@ Or manually:
 
 ## Configuration
 
-1. In the Revotion Flutter App, go to **Settings > Home Assistant**
-2. Tap **Copy Token** -- this copies a JSON configuration to your clipboard
+1. In the Revotion App, go to **Settings > Share Configuration** -- a QR code is displayed
+2. Scan the QR code with a QR scanner app that shows its content as text, and copy the text
+   - *This workaround is only needed until the next app update, which adds a button to copy the configuration directly.*
 3. In Home Assistant, go to **Settings > Devices & Services > Add Integration**
 4. Search for **Revotion** and select it
-5. Paste the JSON from step 2 into the text field
+5. Paste the copied JSON into the text field
 6. Confirm the detected Brain name and MAC address
 
 The integration automatically validates your token and sets up all discovered devices.
@@ -103,7 +104,7 @@ When you unpair a Node, its entities are marked as **unavailable** (not deleted)
 Revotion tokens are valid for 180 days. When your token is about to expire (< 14 days remaining), Home Assistant shows a persistent notification. Once the token has expired, Home Assistant automatically asks for re-authentication:
 
 1. Open the Revotion App > Settings > Share Configuration
-2. Copy the configuration JSON
+2. Copy the configuration JSON (see [Configuration](#configuration) for the QR code workaround)
 3. Paste it into the re-authentication dialog in Home Assistant
 
 Your devices, entities, and automations are preserved.

@@ -78,11 +78,83 @@
           "wifi": "WLAN"
         }
       },
-      "last_connection": { "name": "Letzte Verbindung" }
+      "last_connection": { "name": "Letzte Verbindung" },
+      "thitronik_alarm_reason": {
+        "name": "Alarmgrund",
+        "state": {
+          "none": "Kein Alarm",
+          "sensor_1": "Sensor 1",
+          "sensor_2": "Sensor 2",
+          "sensor_3": "Sensor 3",
+          "sensor_4": "Sensor 4",
+          "sensor_5": "Sensor 5",
+          "sensor_6": "Sensor 6",
+          "sensor_7": "Sensor 7",
+          "sensor_8": "Sensor 8",
+          "sensor_9": "Sensor 9",
+          "sensor_10": "Sensor 10",
+          "sensor_11": "Sensor 11",
+          "sensor_12": "Sensor 12",
+          "sensor_13": "Sensor 13",
+          "sensor_14": "Sensor 14",
+          "sensor_15": "Sensor 15",
+          "sensor_16": "Sensor 16",
+          "sensor_17": "Sensor 17",
+          "sensor_18": "Sensor 18",
+          "sensor_19": "Sensor 19",
+          "sensor_20": "Sensor 20",
+          "sensor_21": "Sensor 21",
+          "sensor_22": "Sensor 22",
+          "sensor_23": "Sensor 23",
+          "sensor_24": "Sensor 24",
+          "sensor_25": "Sensor 25",
+          "sensor_26": "Sensor 26",
+          "sensor_27": "Sensor 27",
+          "sensor_28": "Sensor 28",
+          "sensor_29": "Sensor 29",
+          "sensor_30": "Sensor 30",
+          "sensor_31": "Sensor 31",
+          "break_in_door_interior_light": "Einbruchstür (Innenbeleuchtung)",
+          "break_in_door_can_bus": "Einbruchstür (CAN-BUS)",
+          "gas_detector": "Gasmelder",
+          "jammer_detection": "Jammer-Erkennung",
+          "radio_cable_loop": "Funk-Kabelschleife",
+          "radio_water_detector": "Funk-Wassermelder",
+          "radio_gas_detector_co": "Funk-Gasmelder CO",
+          "sms_alarm": "SMS-Alarm (nur mit Pro-Finder)",
+          "panic_alarm": "Panikalarm (über Handsender)",
+          "unknown": "Unbekannt"
+        }
+      }
     },
     "switch": {
       "switch": { "name": "Schalter" },
       "switch_channel": { "name": "Kanal {channel}" }
+    },
+    "select": {
+      "connect_select": {
+        "state": {
+          "gas": "Gas",
+          "electric": "Elektrisch",
+          "both": "Beides",
+          "automatic": "Automatik",
+          "v12": "12 V",
+          "ac": "AC",
+          "off": "Aus",
+          "normal": "Normal",
+          "boost": "Boost",
+          "auto": "Auto",
+          "eco": "Eco",
+          "hot": "Hot",
+          "900_w": "900 W",
+          "1800_w": "1800 W",
+          "performance": "Leistung",
+          "silent": "Flüster-Modus",
+          "turbo": "Turbo",
+          "fan_speed": "Kühlstufe",
+          "target_temp": "Zieltemperatur"
+        }
+      }
     },
     "cover": {
       "two_way": { "name": "Zwei-Wege" }

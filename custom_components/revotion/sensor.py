@@ -31,11 +31,11 @@ from .connect import (
     get_descriptor,
     has_descriptor,
     humanize_path,
-    read_dev_data_array,
     read_dev_data_path,
+    reconcile_gated_entities,
     resolve_connect_device,
 )
-from .connect.descriptors import ArraySensorSpec, SensorSpec
+from .connect.descriptors import ArraySensorSpec, EnumSensorSpec, SensorSpec
 from .connect.entity import resolve_entity_category, resolve_sensor_device_class
 from .const import (
     CONF_BRAIN_MAC,
@@ -509,13 +509,121 @@ class RevotionConnectDescriptorSensor(RevotionCapabilityMixin, CoordinatorEntity
         return read_dev_data_path(cap, self._spec.path)
 
 
+class RevotionConnectEnumSensor(RevotionCapabilityMixin, CoordinatorEntity[RevotionCoordinator], SensorEntity):
+    """Translated enum sensor for a numeric Connect dev_data code field.
+
+    Created from an :class:`EnumSensorSpec` (Thitronik ``alarm_reason``): the
+    raw wire code maps to a fixed option string and HA translates it to the UI
+    language via the spec's ``translation_key``
+    (``entity.sensor.<translation_key>.state.*`` in translations/). The entity
+    name comes from the same translation block, so ``_attr_name`` stays unset.
+
+    The raw code is always exposed as a ``raw_code`` attribute (for
+    automations); for codes inside the spec's sensor range the kind of radio
+    sensor that triggered is resolved from the app config type list and exposed
+    as ``triggered_sensor_type`` (English label; attributes are not
+    translatable in HA).
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.ENUM
+
+    def __init__(
+        self,
+        coordinator: RevotionCoordinator,
+        brain_mac: str,
+        node_mac: str,
+        cap_index: int,
+        spec: EnumSensorSpec,
+        config_name: str = "",
+    ) -> None:
+        """Initialize a descriptor-driven Connect enum sensor."""
+        super().__init__(coordinator)
+        self._node_mac = normalize_mac(node_mac)
+        self._cap_index = cap_index
+        self._brain_mac = normalize_mac(brain_mac)
+        self._spec = spec
+        self._attr_unique_id = f"revotion_{self._brain_mac}_{self._node_mac}_{cap_index}_{spec.key}"
+        self._attr_device_info = {"identifiers": {(DOMAIN, self._node_mac)}}
+        self._attr_translation_key = spec.translation_key
+        self._attr_options = list(spec.options())
+        self._attr_entity_category = resolve_entity_category(spec.entity_category)
+
+    @property
+    def available(self) -> bool:
+        """Return True if the node is reachable and the capability exists."""
+        return super().available and self._node_reachable() and self._find_capability() is not None
+
+    def _raw_code(self) -> int | None:
+        """Return the current wire code as int, or None if absent/non-numeric."""
+        cap = self._find_capability()
+        if cap is None:
+            return None
+        try:
+            return int(read_dev_data_path(cap, self._spec.path))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the mapped option for the current code (None while unknown)."""
+        code = self._raw_code()
+        if code is None:
+            return None
+        return self._spec.option_for(code)
+
+    def _triggered_sensor_type(self, code: int) -> str | None:
+        """Resolve which kind of radio sensor a range code points at, or None.
+
+        Mirrors the app (thitronik_tile_dialog.dart): ``app_type[code - 1]``
+        indexes the type-label list. The config list may sit top-level or under
+        ``dev_conf`` in ``capability.config.data`` (same dual shape as the
+        SafeLock flag) and carries string values.
+        """
+        if self._spec.sensor_type_config_key is None or self._spec.sensor_range is None:
+            return None
+        low, high = self._spec.sensor_range
+        if not low <= code <= high:
+            return None
+        cap = self._find_capability()
+        if cap is None:
+            return None
+        config_data = cap.config.data
+        type_list = config_data.get(self._spec.sensor_type_config_key)
+        if type_list is None:
+            dev_conf = config_data.get("dev_conf")
+            if isinstance(dev_conf, dict):
+                type_list = dev_conf.get(self._spec.sensor_type_config_key)
+        if not isinstance(type_list, list) or not 0 <= code - 1 < len(type_list):
+            return None
+        try:
+            type_index = int(type_list[code - 1])
+        except (TypeError, ValueError):
+            return None
+        if not 0 <= type_index < len(self._spec.sensor_type_labels):
+            return None
+        return self._spec.sensor_type_labels[type_index]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, int | str | None] | None:
+        """Expose the raw wire code and, for sensor codes, the sensor type."""
+        code = self._raw_code()
+        if code is None:
+            return None
+        attrs: dict[str, int | str | None] = {"raw_code": code}
+        sensor_type = self._triggered_sensor_type(code)
+        if sensor_type is not None:
+            attrs["triggered_sensor_type"] = sensor_type
+        return attrs
+
+
 class RevotionConnectArraySensor(RevotionCapabilityMixin, CoordinatorEntity[RevotionCoordinator], SensorEntity):
     """Descriptor-driven sensor for one element of a numeric Connect array.
 
     Created from an :class:`ArraySensorSpec` -- one entity per element of a
     ``dev_data`` array (EcoFlow ``pwr[5]`` per-channel power). The element is
     read by index; if a later message shrinks the array below this index the
-    value reads as None.
+    discovery reconcile removes the entity.
     """
 
     _attr_has_entity_name = True
@@ -797,8 +905,29 @@ async def async_setup_entry(
     # paired. Track at (node_mac, cap_index, key) granularity so new leaves from
     # later messages are picked up and nothing is added twice. The third element
     # is the descriptor spec.key for tailored devices, or the flat dev_data path
-    # for the generic mirror -- both unique within a (node, cap).
+    # for the generic mirror -- both unique within a (node, cap). Array-sensor
+    # families are *reconciled* against the array length instead (elements
+    # removed from the data drop their entities, see binary_sensor.py).
     known_connect_paths: set[tuple[str, int, str]] = set()
+    brain_norm = normalize_mac(brain_mac)
+    array_entities: dict[tuple[str, int, str], SensorEntity] = {}
+
+    def _make_array_sensor(node, capability, array_spec, index):
+        """Bind a per-element factory (own scope avoids late-binding in the loop)."""
+
+        def factory() -> RevotionConnectArraySensor:
+            register_node_device(hass, entry, node, brain_mac)
+            return RevotionConnectArraySensor(
+                coordinator=coordinator,
+                brain_mac=brain_mac,
+                node_mac=node.mac_address,
+                cap_index=capability.capability_index,
+                spec=array_spec,
+                index=index,
+                config_name=capability.config.name,
+            )
+
+        return factory
 
     def _check_connect() -> None:
         """Create Connect sensors once a device code resolves.
@@ -820,6 +949,7 @@ async def async_setup_entry(
         known_connect_paths.difference_update(stale)
 
         entities: list[SensorEntity] = []
+        array_candidates = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
             for capability in node.capabilities:
@@ -847,23 +977,45 @@ async def async_setup_entry(
                                 config_name=capability.config.name,
                             )
                         )
+                    for enum_spec in descriptor.enum_sensors:
+                        key = (node_mac, capability.capability_index, enum_spec.key)
+                        if key in known_connect_paths:
+                            continue
+                        known_connect_paths.add(key)
+                        entities.append(
+                            RevotionConnectEnumSensor(
+                                coordinator=coordinator,
+                                brain_mac=brain_mac,
+                                node_mac=node.mac_address,
+                                cap_index=capability.capability_index,
+                                spec=enum_spec,
+                                config_name=capability.config.name,
+                            )
+                        )
                     for array_spec in descriptor.array_sensors:
-                        elements = read_dev_data_array(capability, array_spec.array_key)
-                        for index in range(len(elements)):
-                            element_key = f"{array_spec.key_prefix}_{index + 1}"
-                            key = (node_mac, capability.capability_index, element_key)
-                            if key in known_connect_paths:
-                                continue
-                            known_connect_paths.add(key)
-                            entities.append(
-                                RevotionConnectArraySensor(
-                                    coordinator=coordinator,
-                                    brain_mac=brain_mac,
-                                    node_mac=node.mac_address,
-                                    cap_index=capability.capability_index,
-                                    spec=array_spec,
-                                    index=index,
-                                    config_name=capability.config.name,
+                        # Only an array actually present in dev_data is
+                        # authoritative; absent means "no information" -- skip
+                        # so a data-less startup window never wipes registry
+                        # rows (see binary_sensor.py).
+                        elements = read_dev_data_path(capability, array_spec.array_key)
+                        if not isinstance(elements, list):
+                            continue
+                        # Sweep the full firmware range, not just len(elements):
+                        # indices beyond the current length yield present=False
+                        # so their entities/ghost rows are removed.
+                        for index in range(array_spec.max_elements):
+                            number = index + 1
+                            key = (node_mac, capability.capability_index, f"{array_spec.key_prefix}_{number}")
+                            unique_id = (
+                                f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}"
+                                f"_{array_spec.key_prefix}_{number}"
+                            )
+                            array_candidates.append(
+                                (
+                                    key,
+                                    index < len(elements),
+                                    unique_id,
+                                    _make_array_sensor(node, capability, array_spec, index),
                                 )
                             )
                     continue  # tailored device: skip the generic mirror
@@ -886,6 +1038,15 @@ async def async_setup_entry(
 
         if entities:
             async_add_entities(entities)
+
+        reconcile_gated_entities(
+            hass=hass,
+            entity_domain="sensor",
+            entities=array_entities,
+            current_macs=current_macs,
+            candidates=array_candidates,
+            async_add_entities=async_add_entities,
+        )
 
     def _on_update() -> None:
         """Coordinator listener: run both standard and Connect discovery."""

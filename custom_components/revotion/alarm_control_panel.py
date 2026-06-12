@@ -24,6 +24,7 @@ from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelState,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -50,10 +51,13 @@ class RevotionConnectAlarmPanel(
     else ARMED_AWAY when armed, else DISARMED. Arm/disarm publish a command code
     on ``ctr_data`` and assume the new state optimistically until the MQTT echo
     arrives (cleared in ``_handle_coordinator_update``).
+
+    When the spec carries a ``trigger_command`` (Thitronik panic: 115) the panel
+    additionally supports the ``alarm_trigger`` service: it fires the siren
+    directly and assumes TRIGGERED until the alarm flag confirms it.
     """
 
     _attr_has_entity_name = True
-    _attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
     _attr_code_arm_required = False
     _attr_assumed_state = True
 
@@ -78,6 +82,9 @@ class RevotionConnectAlarmPanel(
         self._mqtt_client = mqtt_client
         self._init_connect_command_state()
         self._optimistic_state: AlarmControlPanelState | None = None
+        self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
+        if spec.trigger_command is not None:
+            self._attr_supported_features |= AlarmControlPanelEntityFeature.TRIGGER
         brain_mac_normalized = normalize_mac(brain_mac)
         self._attr_unique_id = f"revotion_{brain_mac_normalized}_{self._node_mac}_{cap_index}_{spec.key}"
         self._attr_device_info = {"identifiers": {(DOMAIN, self._node_mac)}}
@@ -94,8 +101,8 @@ class RevotionConnectAlarmPanel(
         """Return the panel state from dev_data, or the optimistic assumption.
 
         TRIGGERED takes priority over armed/disarmed: a triggered alarm is the
-        most safety-relevant state. The optimistic value (set on arm/disarm)
-        wins until the coordinator echoes real data.
+        most safety-relevant state. The optimistic value (set on
+        arm/disarm/trigger) wins until the coordinator echoes real data.
         """
         if self._optimistic_state is not None:
             return self._optimistic_state
@@ -133,6 +140,12 @@ class RevotionConnectAlarmPanel(
             return False
         if self._spec.alarm_path is not None and int01_to_bool(read_dev_data_path(cap, self._spec.alarm_path)):
             return True
+        if self._optimistic_state == AlarmControlPanelState.TRIGGERED:
+            # Only the alarm flag itself confirms a trigger command. The armed
+            # comparison below must not run: the coordinator fires for every
+            # MQTT message, and a stale armed=0 report while the trigger echo
+            # is in flight would otherwise falsely "confirm" as disarmed.
+            return False
         armed = int01_to_bool(read_dev_data_path(cap, self._spec.armed_path))
         if armed is None:
             return False
@@ -149,6 +162,14 @@ class RevotionConnectAlarmPanel(
         """Disarm the alarm system by publishing the disarm command."""
         await self._publish_connect_command(connect_command_dev_data(self._spec.disarm_command))
         self._optimistic_state = AlarmControlPanelState.DISARMED
+        self.async_write_ha_state()
+
+    async def async_alarm_trigger(self, code: str | None = None) -> None:
+        """Fire the alarm directly (panic) by publishing the trigger command."""
+        if self._spec.trigger_command is None:
+            raise HomeAssistantError(f"{self.name} does not support triggering the alarm")
+        await self._publish_connect_command(connect_command_dev_data(self._spec.trigger_command))
+        self._optimistic_state = AlarmControlPanelState.TRIGGERED
         self.async_write_ha_state()
 
 

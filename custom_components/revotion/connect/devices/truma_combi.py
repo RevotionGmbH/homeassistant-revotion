@@ -30,8 +30,13 @@ OFF/HEAT driven purely by ``comb_air.state``; ``comb_air.mode`` is preserved
 current-temperature field, so the climate shows setpoint only (acceptable).
 
 p_lim is a two-value choice (900 / 1800 W) -> modelled as a select (cleaner
-than a number with two valid points). Only meaningful when energy_sel is
-electric/both, but always shown (the firmware accepts it regardless).
+than a number with two valid points).
+
+The app gates its whole Energy section (energy dropdown + p_lim slider) on the
+``energyEnabled`` flag (truma_combi_tile_dialog.dart) -- a Combi without
+electric elements has no energy selection. Both selects are presence-gated on
+it here (note the camelCase wire key; firmware-internal name is
+``energy_sel_av``).
 """
 
 from __future__ import annotations
@@ -168,6 +173,7 @@ TRUMA_COMBI_DESCRIPTOR = ConnectDeviceDescriptor(
             write_path="energy_sel",
             options=("gas", "electric", "both"),
             option_to_value={"gas": ENERGY_GAS, "electric": ENERGY_ELECTRIC, "both": ENERGY_BOTH},
+            available_path="energyEnabled",
         ),
         SelectSpec(
             key="water_power_limit",
@@ -177,6 +183,7 @@ TRUMA_COMBI_DESCRIPTOR = ConnectDeviceDescriptor(
             options=("900_w", "1800_w"),
             option_to_value={"900_w": P_LIM_900, "1800_w": P_LIM_1800},
             entity_category="config",
+            available_path="energyEnabled",
         ),
     ),
     # Control locked while the Truma's own panel is in use / shows an error

@@ -56,7 +56,6 @@ __all__ = [
     "int01_to_bool",
     "is_boolish",
     "is_path_available",
-    "read_dev_data_array",
     "read_dev_data_path",
     "reconcile_gated_entities",
     "remove_gated_entity",
@@ -144,20 +143,6 @@ def read_dev_data_path(capability: Capability, path: str) -> Any:
         else:
             return None
     return node
-
-
-def read_dev_data_array(capability: Capability, array_key: str) -> list[Any]:
-    """Read a top-level ``dev_data`` list, or ``[]`` if absent/not a list.
-
-    Used to size :class:`.descriptors.ArrayBinarySensorSpec` families (Thitronik
-    ``stat[]`` / ``bat[]``) -- one entity per element, growing as later messages
-    lengthen the array.
-    """
-    dev_data = capability.data.get("dev_data")
-    if not isinstance(dev_data, dict):
-        return []
-    value = dev_data.get(array_key)
-    return value if isinstance(value, list) else []
 
 
 # Wire values that an availability flag treats as "not available". A 0/1 flag

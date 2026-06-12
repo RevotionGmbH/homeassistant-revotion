@@ -63,6 +63,83 @@ class SensorSpec:
 
 
 @dataclass(frozen=True, kw_only=True)
+class EnumSensorSpec:
+    """Translated enum ``sensor`` for a numeric ``dev_data`` code field.
+
+    For wire fields that are an opaque code the app renders as localized text
+    (Thitronik ``alarm_reason``). The entity gets ``device_class: enum`` with a
+    fixed option list and a ``translation_key``, so HA translates the state via
+    ``translations/{en,de}.json`` (``entity.sensor.<translation_key>.state.*``).
+    The entity name also comes from the translation (no ``_attr_name``).
+
+    Codes resolve in this order:
+
+    1. An exact match in :attr:`value_map` -> that option.
+    2. Inside :attr:`sensor_range` (Thitronik 1-31 = index of the triggered
+       radio sensor) -> ``f"{sensor_option_prefix}_{code}"``.
+    3. Anything else -> :attr:`unknown_option`.
+
+    For range codes the spec can additionally resolve *which kind* of sensor
+    triggered: the app config carries a per-sensor type index list
+    (:attr:`sensor_type_config_key`, e.g. ``"app_type"``, top-level or nested
+    under ``dev_conf`` in ``capability.config.data``) pointing into
+    :attr:`sensor_type_labels` (the app's dropdown list). The resolved label is
+    surfaced as an extra state attribute -- attributes are not translatable, so
+    the labels are plain English.
+
+    Attributes:
+        path: Dotted ``dev_data`` leaf path holding the code.
+        key: Stable suffix for the entity ``unique_id``.
+        name: Fallback display name (used in logs; the UI name comes from the
+            translation files via ``translation_key``).
+        translation_key: HA translation key for entity name + state texts.
+        value_map: Ordered ``(wire code, option string)`` pairs for fixed codes.
+        sensor_range: Optional inclusive ``(low, high)`` code range mapped to
+            per-sensor options; ``None`` if the device has no such range.
+        sensor_option_prefix: Option prefix for range codes (``"sensor"`` ->
+            ``sensor_1`` ...).
+        sensor_type_config_key: Optional ``capability.config.data`` key holding
+            the per-sensor type index list (checked top-level and under
+            ``dev_conf``). ``None`` disables the type attribute.
+        sensor_type_labels: Label per type index (the app's dropdown order).
+        unknown_option: Option reported for unmapped codes.
+        entity_category: Optional HA ``EntityCategory`` value.
+    """
+
+    path: str
+    key: str
+    name: str
+    translation_key: str
+    value_map: tuple[tuple[int, str], ...]
+    sensor_range: tuple[int, int] | None = None
+    sensor_option_prefix: str = "sensor"
+    sensor_type_config_key: str | None = None
+    sensor_type_labels: tuple[str, ...] = ()
+    unknown_option: str = "unknown"
+    entity_category: str | None = None
+
+    def options(self) -> tuple[str, ...]:
+        """Return every option this sensor can report (for ``_attr_options``)."""
+        opts = [option for _, option in self.value_map]
+        if self.sensor_range is not None:
+            low, high = self.sensor_range
+            opts += [f"{self.sensor_option_prefix}_{code}" for code in range(low, high + 1)]
+        opts.append(self.unknown_option)
+        return tuple(opts)
+
+    def option_for(self, code: int) -> str:
+        """Map a wire code to its option string (see class docstring order)."""
+        for value, option in self.value_map:
+            if code == value:
+                return option
+        if self.sensor_range is not None:
+            low, high = self.sensor_range
+            if low <= code <= high:
+                return f"{self.sensor_option_prefix}_{code}"
+        return self.unknown_option
+
+
+@dataclass(frozen=True, kw_only=True)
 class BinarySensorSpec:
     """One read-only ``binary_sensor`` entity backed by a 0/1 ``dev_data`` leaf.
 
@@ -91,10 +168,14 @@ class ArrayBinarySensorSpec:
 
     Used for ``dev_data`` arrays where each index is an independent flag and the
     count is device-/install-dependent (Thitronik ``stat[]`` magnet contacts and
-    ``bat[]`` sensor batteries). The platform expands this against the array
-    length present in the data, creating ``key_prefix_{n}`` entities lazily as
-    later messages grow the array -- the same idea as the dynamic battery
-    current channels, keyed on array index instead of a fixed sub-entity list.
+    ``bat[]`` sensor batteries). The platform reconciles the entity set against
+    the array length present in the data: ``key_prefix_{n}`` entities are created
+    as the array grows and removed (live + registry row) when it shrinks --
+    e.g. sensors deleted in the app must not linger in HA as "unavailable"
+    ghosts. Indices from the current length up to ``max_elements`` are swept so
+    ghost registry rows left by an earlier session are cleaned up after a
+    restart too (same mechanism as the presence-gated entities, see
+    :mod:`..discovery`).
 
     Attributes:
         array_key: Top-level ``dev_data`` key holding the list (e.g. ``"stat"``).
@@ -103,6 +184,9 @@ class ArrayBinarySensorSpec:
         name_prefix: Per-element fallback display name prefix
             (``"Contact"`` -> ``"Contact 1"``). 1-based to match user-facing
             sensor numbering.
+        max_elements: Firmware upper bound of the array length (Thitronik: 30).
+            Defines how far the ghost-cleanup sweep reaches; never creates
+            entities beyond the actual data.
         device_class: Optional HA ``BinarySensorDeviceClass`` value applied to
             every element.
         entity_category: Optional HA ``EntityCategory`` value.
@@ -111,6 +195,7 @@ class ArrayBinarySensorSpec:
     array_key: str
     key_prefix: str
     name_prefix: str
+    max_elements: int
     device_class: str | None = None
     entity_category: str | None = None
 
@@ -121,14 +206,16 @@ class ArraySensorSpec:
 
     The numeric counterpart of :class:`ArrayBinarySensorSpec`: for a ``dev_data``
     array of scalar values where each index is its own measurement (EcoFlow
-    ``pwr[5]`` per-channel power). One ``sensor`` per element, expanded against
-    the array length and grown lazily as later messages lengthen the array.
+    ``pwr[5]`` per-channel power). One ``sensor`` per element, reconciled against
+    the array length in the data (created as the array grows, removed live +
+    registry when it shrinks; ghost rows swept up to ``max_elements``).
 
     Attributes:
         array_key: Top-level ``dev_data`` key holding the list (e.g. ``"pwr"``).
         key_prefix: Prefix for each element's ``unique_id`` suffix /
             ``translation_key`` (``"power"`` -> ``power_1``, ...).
         name_prefix: Per-element fallback display name prefix (1-based).
+        max_elements: Firmware upper bound of the array length (EcoFlow: 5).
         device_class: Optional HA ``SensorDeviceClass`` value for every element.
         unit: Optional native unit of measurement.
         entity_category: Optional HA ``EntityCategory`` value.
@@ -137,6 +224,7 @@ class ArraySensorSpec:
     array_key: str
     key_prefix: str
     name_prefix: str
+    max_elements: int
     device_class: str | None = None
     unit: str | None = None
     entity_category: str | None = None
@@ -159,6 +247,10 @@ class AlarmPanelSpec:
             ``None`` if the device has no triggered state.
         arm_away_command: Command code published to arm (Thitronik: 72).
         disarm_command: Command code published to disarm (Thitronik: 170).
+        trigger_command: Optional command code that fires the alarm directly
+            (Thitronik panic: 115). When set, the panel supports the
+            ``alarm_trigger`` service (``AlarmControlPanelEntityFeature.TRIGGER``);
+            ``None`` means the device cannot be triggered remotely.
     """
 
     key: str
@@ -167,6 +259,36 @@ class AlarmPanelSpec:
     alarm_path: str | None
     arm_away_command: int
     disarm_command: int
+    trigger_command: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ButtonSpec:
+    """Spec for a ``button`` entity that publishes a bare command code.
+
+    A stateless one-shot action (Thitronik panic alarm). Pressing publishes
+    ``dev_data: {"command": <code>}`` via the Connect control plumbing under
+    the usual single-command lock.
+
+    Attributes:
+        key: Stable suffix for the entity ``unique_id`` / ``translation_key``.
+        name: Fallback display name.
+        command: Command code published on press (Thitronik panic: 115).
+        confirm_path: Optional 0/1 ``dev_data`` leaf that confirms the press
+            (Thitronik: ``"alarm"`` flips to 1 once the siren fires). The
+            command lock is held until the flag reads truthy (or the 60 s
+            timeout). ``None`` releases the lock on the next coordinator
+            update (no device feedback for the action).
+        icon: Optional MDI icon (buttons carry no device_class that fits).
+        entity_category: Optional HA ``EntityCategory`` value.
+    """
+
+    key: str
+    name: str
+    command: int
+    confirm_path: str | None = None
+    icon: str | None = None
+    entity_category: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -421,6 +543,11 @@ class NumberSpec:
         entity_category: Optional HA ``EntityCategory`` string.
         as_int: Send the value as an int (firmware int16 fields like
             target_temp) rather than float. HA numbers are floats internally.
+        available_path: optional ``dev_data`` 0/1 leaf gating availability
+            (Alde ``fuel_av`` for the fuel-power setpoint -- the app hides the
+            slider on installs without fuel). Presence-gated like switches: the
+            discovery listener removes the entity outright when the flag is
+            falsy; ``None`` means always present.
         extra_command_fields: Static extra ``dev_data`` keys (dotted) sent with
             the command. Values may be int or nested via the path syntax.
     """
@@ -437,6 +564,7 @@ class NumberSpec:
     mode: str = "auto"
     entity_category: str | None = None
     as_int: bool = False
+    available_path: str | None = None
     # Optional dev_stat path locking control on 6/7; see ClimateSpec.lock_path.
     lock_path: str | None = None
     extra_command_fields: dict[str, int] = field(default_factory=dict)
@@ -466,6 +594,17 @@ class SelectSpec:
         option_to_value: option string -> raw ``dev_data`` value written.
         value_to_option: derived inverse (raw value -> option); do not pass.
         entity_category: Optional HA ``EntityCategory`` string.
+        available_path: optional ``dev_data`` 0/1 leaf gating availability
+            (Truma Combi ``energyEnabled`` for the energy-source / power-limit
+            pair -- the app hides the whole Energy section without it).
+            Presence-gated like switches: the discovery listener removes the
+            entity outright when the flag is falsy; ``None`` means always
+            present.
+        option_av_flags: option string -> ``dev_data`` 0/1 leaf that must be
+            truthy for that option to be offered (Alde water ``auto`` needs
+            ``water_auto_av``). The currently selected option is always offered
+            regardless of its flag (mirrors the app: ``waterAutoAvailable ||
+            selected``). Absent entry -> always offered.
         extra_command_fields: Static extra ``dev_data`` keys (dotted) sent with
             the command.
     """
@@ -477,6 +616,8 @@ class SelectSpec:
     options: tuple[str, ...]
     option_to_value: dict[str, int]
     entity_category: str | None = None
+    available_path: str | None = None
+    option_av_flags: dict[str, str] = field(default_factory=dict)
     # Optional dev_stat path locking control on 6/7; see ClimateSpec.lock_path.
     lock_path: str | None = None
     extra_command_fields: dict[str, int] = field(default_factory=dict)
@@ -493,6 +634,11 @@ class SelectSpec:
         values = list(self.option_to_value.values())
         if len(set(values)) != len(values):
             raise ValueError(f"SelectSpec {self.key!r}: duplicate raw value in option_to_value {self.option_to_value}")
+        if not set(self.option_av_flags) <= set(self.options):
+            raise ValueError(
+                f"SelectSpec {self.key!r}: option_av_flags keys {tuple(self.option_av_flags)} "
+                f"not a subset of options {self.options}"
+            )
         # frozen dataclass -> bypass the immutability guard to set the derived field.
         object.__setattr__(self, "value_to_option", {v: k for k, v in self.option_to_value.items()})
 
@@ -544,11 +690,13 @@ class ConnectDeviceDescriptor:
         name: Human-readable device label, used as the entity-name prefix until
             an app config name is available.
         sensors: Read-only ``sensor`` specs.
+        enum_sensors: Translated enum ``sensor`` specs (Thitronik alarm_reason).
         binary_sensors: Read-only ``binary_sensor`` specs at fixed paths.
         array_binary_sensors: Per-element ``binary_sensor`` families.
         alarm_panel: Optional ``alarm_control_panel`` spec (``None`` if the
             device is not an alarm).
         lock: Optional ``lock`` spec (``None`` if the device has no lock).
+        buttons: One-shot command ``button`` specs (Thitronik panic alarm).
         climates: ``climate`` specs (heaters / AC). Usually 0 or 1, but a tuple
             so a device with multiple climate zones (Alde, Truma CP+) fits.
         switches: Writable ``switch`` specs (e.g. Airtronic ``eco``).
@@ -568,10 +716,12 @@ class ConnectDeviceDescriptor:
     device: int
     name: str
     sensors: tuple[SensorSpec, ...] = ()
+    enum_sensors: tuple[EnumSensorSpec, ...] = ()
     binary_sensors: tuple[BinarySensorSpec, ...] = ()
     array_binary_sensors: tuple[ArrayBinarySensorSpec, ...] = ()
     alarm_panel: AlarmPanelSpec | None = None
     lock: LockSpec | None = None
+    buttons: tuple[ButtonSpec, ...] = ()
     climates: tuple[ClimateSpec, ...] = ()
     switches: tuple[SwitchSpec, ...] = ()
     numbers: tuple[NumberSpec, ...] = ()
