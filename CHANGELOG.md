@@ -4,6 +4,25 @@ All notable changes to the Revotion Home Assistant integration are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/); the version
 is the release tag and matches `manifest.json` (pre-releases use PEP 440 style, e.g. `0.4.0b1`).
 
+## 0.5.0 — 2026-08-13
+
+First stable release — same code as pre-release 0.5.0b0, wrapping up the
+0.4.0b0–0.5.0b0 pre-release series.
+
+What the integration offers:
+
+- Setup via config flow: paste the access token from the Revotion app (Settings > Share Configuration)
+- Brain as hub device with automatic discovery of all paired Nodes and their capabilities
+- Real-time updates over MQTT with REST fallback polling
+- Sensors for batteries, tank levels, temperatures, currents and more; switches (incl. multi-channel), dimmable / RGBW / tunable-white lights, two-way covers, GPS device tracker and per-node connectivity monitoring
+- Revotion Connect devices: Eberspächer Airtronic, Truma Combi / CP plus, Alde heating, Dometic FreshJet and fridges, EcoFlow power stations, Thitronik alarm system, and the Victron energy family — BMV / SmartShunt, MPPT, Orion XS, Phoenix, CAN (BMS) batteries (Brain firmware 2.3.3)
+- Commands are acknowledged by the Brain (firmware 2.3.3) and always send the device's complete control state, exactly like the Revotion app
+- Commands are blocked while the Brain is connected via cellular (protects your SIM data plan) — control requires WiFi, monitoring works everywhere
+- English and German translations
+
+Detailed per-release changes: see the sections below or
+[CHANGELOG.md](https://github.com/RevotionGmbH/homeassistant-revotion/blob/main/CHANGELOG.md).
+
 ## 0.5.0b0 — 2026-08-13
 
 Third pre-release.

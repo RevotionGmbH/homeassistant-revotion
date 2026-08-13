@@ -11,5 +11,5 @@
   "loggers": ["custom_components.revotion", "aiomqtt"],
   "requirements": ["aiomqtt>=2.0.0,<3.0"],
   "single_config_entry": false,
-  "version": "0.5.0b0"
+  "version": "0.5.0"
 }
