@@ -17,7 +17,7 @@ from __future__ import annotations
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.climate import HVACMode
 from homeassistant.components.number import NumberDeviceClass, NumberMode
-from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.components.switch import SwitchDeviceClass
 from homeassistant.const import EntityCategory
 
@@ -25,6 +25,11 @@ from homeassistant.const import EntityCategory
 def resolve_sensor_device_class(value: str | None) -> SensorDeviceClass | None:
     """Map a descriptor ``device_class`` string to ``SensorDeviceClass``."""
     return SensorDeviceClass(value) if value is not None else None
+
+
+def resolve_sensor_state_class(value: str | None) -> SensorStateClass | None:
+    """Map a descriptor ``state_class`` string to ``SensorStateClass``."""
+    return SensorStateClass(value) if value is not None else None
 
 
 def resolve_binary_sensor_device_class(value: str | None) -> BinarySensorDeviceClass | None:

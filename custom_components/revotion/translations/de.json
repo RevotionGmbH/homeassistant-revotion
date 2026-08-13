@@ -42,35 +42,93 @@
   },
   "entity": {
     "sensor": {
-      "temperature": { "name": "Temperatur" },
-      "level": { "name": "Füllstand" },
-      "battery_soc": { "name": "SOC" },
-      "battery_voltage": { "name": "Voltage" },
-      "battery_current_ch1": { "name": "Current Ch1" },
-      "battery_current_ch2": { "name": "Current Ch2" },
-      "battery_current_ch3": { "name": "Current Ch3" },
-      "battery_current_ch4": { "name": "Current Ch4" },
-      "battery_current_ch5": { "name": "Current Ch5" },
-      "battery_temperature": { "name": "Temperatur" },
-      "battery_time_remaining": { "name": "Restlaufzeit" },
-      "battery_time_to_full": { "name": "Zeit bis voll" },
-      "battery_charge_cycles": { "name": "Ladezyklen" },
-      "battery_charge_total": { "name": "Gesamtenergie geladen" },
-      "battery_secondary_voltage": { "name": "Sekundärspannung" },
-      "highcurrent_soc": { "name": "SOC" },
-      "highcurrent_voltage": { "name": "Voltage" },
-      "highcurrent_current_ch1": { "name": "Current Ch1" },
-      "highcurrent_current_ch2": { "name": "Current Ch2" },
-      "highcurrent_current_ch3": { "name": "Current Ch3" },
-      "highcurrent_current_ch4": { "name": "Current Ch4" },
-      "highcurrent_current_ch5": { "name": "Current Ch5" },
-      "highcurrent_time_remaining": { "name": "Restlaufzeit" },
-      "highcurrent_time_to_full": { "name": "Zeit bis voll" },
-      "highcurrent_charge_cycles": { "name": "Ladezyklen" },
-      "highcurrent_charge_total": { "name": "Gesamtenergie geladen" },
-      "switch_voltage": { "name": "Spannung" },
-      "switch_current": { "name": "Strom" },
-      "switch_power": { "name": "Leistung" },
+      "temperature": {
+        "name": "Temperatur"
+      },
+      "level": {
+        "name": "Füllstand"
+      },
+      "battery_soc": {
+        "name": "SOC"
+      },
+      "battery_voltage": {
+        "name": "Voltage"
+      },
+      "battery_current_ch1": {
+        "name": "Current Ch1"
+      },
+      "battery_current_ch2": {
+        "name": "Current Ch2"
+      },
+      "battery_current_ch3": {
+        "name": "Current Ch3"
+      },
+      "battery_current_ch4": {
+        "name": "Current Ch4"
+      },
+      "battery_current_ch5": {
+        "name": "Current Ch5"
+      },
+      "battery_temperature": {
+        "name": "Temperatur"
+      },
+      "battery_time_remaining": {
+        "name": "Restlaufzeit"
+      },
+      "battery_time_to_full": {
+        "name": "Zeit bis voll"
+      },
+      "battery_charge_cycles": {
+        "name": "Ladezyklen"
+      },
+      "battery_charge_total": {
+        "name": "Gesamtenergie geladen"
+      },
+      "battery_secondary_voltage": {
+        "name": "Sekundärspannung"
+      },
+      "highcurrent_soc": {
+        "name": "SOC"
+      },
+      "highcurrent_voltage": {
+        "name": "Voltage"
+      },
+      "highcurrent_current_ch1": {
+        "name": "Current Ch1"
+      },
+      "highcurrent_current_ch2": {
+        "name": "Current Ch2"
+      },
+      "highcurrent_current_ch3": {
+        "name": "Current Ch3"
+      },
+      "highcurrent_current_ch4": {
+        "name": "Current Ch4"
+      },
+      "highcurrent_current_ch5": {
+        "name": "Current Ch5"
+      },
+      "highcurrent_time_remaining": {
+        "name": "Restlaufzeit"
+      },
+      "highcurrent_time_to_full": {
+        "name": "Zeit bis voll"
+      },
+      "highcurrent_charge_cycles": {
+        "name": "Ladezyklen"
+      },
+      "highcurrent_charge_total": {
+        "name": "Gesamtenergie geladen"
+      },
+      "switch_voltage": {
+        "name": "Spannung"
+      },
+      "switch_current": {
+        "name": "Strom"
+      },
+      "switch_power": {
+        "name": "Leistung"
+      },
       "connection_type": {
         "name": "Verbindungstyp",
         "state": {
@@ -78,7 +136,9 @@
           "wifi": "WLAN"
         }
       },
-      "last_connection": { "name": "Letzte Verbindung" },
+      "last_connection": {
+        "name": "Letzte Verbindung"
+      },
       "thitronik_alarm_reason": {
         "name": "Alarmgrund",
         "state": {
@@ -125,11 +185,63 @@
           "panic_alarm": "Panikalarm (über Handsender)",
           "unknown": "Unbekannt"
         }
+      },
+      "ve_charge_state": {
+        "name": "Ladezustand",
+        "state": {
+          "off": "Aus",
+          "low_power": "Sparmodus",
+          "fault": "Fehler",
+          "bulk": "Bulk",
+          "absorption": "Absorption",
+          "float": "Erhaltung",
+          "storage": "Lagerung",
+          "equalize": "Ausgleich",
+          "inverting": "Wechselrichten",
+          "power_supply": "Netzteilbetrieb",
+          "starting_up": "Startet",
+          "auto_equalize": "Auto-Ausgleich",
+          "battery_safe": "Batterieschutz",
+          "external_control": "Externe Steuerung",
+          "unknown": "Unbekannt"
+        }
+      },
+      "ve_tracker_state": {
+        "name": "Tracker-Status",
+        "state": {
+          "off": "Aus",
+          "limited": "Begrenzt",
+          "active": "MPP-Tracking",
+          "unknown": "Unbekannt"
+        }
+      },
+      "ve_mode": {
+        "name": "Gerätemodus",
+        "state": {
+          "off": "Aus",
+          "on": "An",
+          "eco": "Eco",
+          "hibernate": "Ruhezustand",
+          "unknown": "Unbekannt"
+        }
+      },
+      "battery_total_current": {
+        "name": "Gesamtstrom"
+      },
+      "highcurrent_total_current": {
+        "name": "Gesamtstrom"
+      },
+      "level_voltage": {
+        "name": "Sensorspannung"
       }
     },
     "switch": {
-      "switch": { "name": "Schalter" },
-      "switch_channel": { "name": "Kanal {channel}" }
+      "switch": {
+        "name": "Schalter"
+      },
+      "switch_channel": {
+        "name": "Kanal {channel}"
+      }
     },
     "select": {
       "connect_select": {
@@ -157,20 +269,36 @@
       }
     },
     "cover": {
-      "two_way": { "name": "Zwei-Wege" }
+      "two_way": {
+        "name": "Zwei-Wege"
+      }
     },
     "light": {
-      "ambient_light": { "name": "Licht" },
-      "ambient_light_channel": { "name": "Kanal {channel}" }
+      "ambient_light": {
+        "name": "Licht"
+      },
+      "ambient_light_channel": {
+        "name": "Kanal {channel}"
+      }
     },
     "binary_sensor": {
-      "mqtt_connection": { "name": "MQTT-Verbindung" },
-      "brain_online": { "name": "Online" },
-      "switch_fuse": { "name": "Sicherung" },
-      "node_connectivity": { "name": "Verbindung" }
+      "mqtt_connection": {
+        "name": "MQTT-Verbindung"
+      },
+      "brain_online": {
+        "name": "Online"
+      },
+      "switch_fuse": {
+        "name": "Sicherung"
+      },
+      "node_connectivity": {
+        "name": "Verbindung"
+      }
     },
     "device_tracker": {
-      "gps_position": { "name": "GPS-Position" }
+      "gps_position": {
+        "name": "GPS-Position"
+      }
     }
   },
   "exceptions": {

@@ -47,6 +47,25 @@ TOPIC_PAIR = "{mac}/pair"
 TOPIC_CONTROL = "{mac}/ctr"
 TOPIC_CONTROL_CONFIG = "{mac}/ctr_config"
 TOPIC_CONTROL_DATA = "{mac}/ctr_data"
+# Command acknowledgements (Brain >= 2.3.3): two-stage queued -> delivered /
+# failed lifecycle for opt-in ("ack": true) data commands, published by the
+# brain for remote-originated commands only. QoS 0 best-effort -- treat as an
+# accelerator on top of the echo/timeout machinery, never as the only signal.
+# See Brain_v2_ESPNOW docs/cmd_ack.md.
+TOPIC_ACK = "{mac}/ack"
+
+# CMD_ACK lifecycle state codes (wire-pinned, docs/cmd_ack.md).
+ACK_STATE_QUEUED = 0
+ACK_STATE_DELIVERED = 1
+ACK_STATE_FAILED = 2
+ACK_STATE_APPLIED = 3
+
+# CMD_ACK failure reason codes (only with state 2).
+ACK_FAILURE_REASONS: dict[int, str] = {
+    1: "node unreachable (radio send failed)",
+    2: "node missed its wake window",
+    3: "brain command queue full",
+}
 
 # Persistent-notification body when a command gets no MQTT echo within the
 # timeout. Shared by all three command paths (native switch, RevotionCommandMixin,
@@ -55,6 +74,10 @@ TOPIC_CONTROL_DATA = "{mac}/ctr_data"
 COMMAND_TIMEOUT_MESSAGE = (
     "No confirmation received for **{entity}** within {timeout}s. The command may not have been executed."
 )
+
+# Persistent-notification body when the Brain reports a terminal command
+# failure via CMD_ACK (much earlier than the timeout would fire).
+COMMAND_FAILED_MESSAGE = "The command for **{entity}** failed: {reason}."
 
 # Firmware user-error code 0x1005: the Brain marks a node with this after
 # 3 unanswered ESP-NOW status polls (2 in light sleep) and pushes the updated
@@ -149,14 +172,20 @@ class ConnectDevice(IntEnum):
     AIRTRONIC3 = 256
     TRUMA_COMBI = 512
     TRUMA_CPP = 514
-    VE_DIRECT = 768
+    # VE.Direct / CAN energy family (firmware 0x300 block, Brain >= 2.3.3;
+    # values match the app's ConnectivityDeviceType enum).
+    VE_DIRECT_BMV = 768
+    VE_DIRECT_MPPT = 769
+    VE_DIRECT_ORION_XS = 770
+    PHOENIX_CHARGER = 771
+    PHOENIX_INVERTER = 772
+    CAN_BATTERY = 773
     THITRONIK = 1024
     ECOFLOW = 1280
     ALDE = 1536
     DOMETIC_FRIDGE = 1792
     DOMETIC_FRESHJET = 1793
     DOMETIC_FRIDGE_ABS = 1794
-    AUTOTERM = 2048
 
 
 CAPABILITY_PLATFORM_MAP: dict[CapabilityType, Platform] = {
@@ -194,14 +223,18 @@ CONNECT_DEVICE_LABELS: dict[ConnectDevice, str] = {
     ConnectDevice.AIRTRONIC3: "Eberspächer Airtronic 3",
     ConnectDevice.TRUMA_COMBI: "Truma Combi",
     ConnectDevice.TRUMA_CPP: "Truma CP+",
-    ConnectDevice.VE_DIRECT: "Victron VE.Direct",
+    ConnectDevice.VE_DIRECT_BMV: "Victron BMV / SmartShunt",
+    ConnectDevice.VE_DIRECT_MPPT: "Victron MPPT",
+    ConnectDevice.VE_DIRECT_ORION_XS: "Victron Orion XS",
+    ConnectDevice.PHOENIX_CHARGER: "Victron Phoenix Charger",
+    ConnectDevice.PHOENIX_INVERTER: "Victron Phoenix Inverter",
+    ConnectDevice.CAN_BATTERY: "CAN Battery (BMS)",
     ConnectDevice.THITRONIK: "Thitronik WiPro III",
     ConnectDevice.ECOFLOW: "EcoFlow PowerKit",
     ConnectDevice.ALDE: "Alde 3030",
     ConnectDevice.DOMETIC_FRIDGE: "Dometic Fridge (Compressor)",
     ConnectDevice.DOMETIC_FRESHJET: "Dometic FreshJet",
     ConnectDevice.DOMETIC_FRIDGE_ABS: "Dometic Fridge (Absorber)",
-    ConnectDevice.AUTOTERM: "Autoterm",
 }
 
 

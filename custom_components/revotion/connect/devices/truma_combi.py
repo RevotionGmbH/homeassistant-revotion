@@ -41,6 +41,9 @@ it here (note the camelCase wire key; firmware-internal name is
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
 from ..descriptors import (
     BinarySensorSpec,
@@ -50,6 +53,7 @@ from ..descriptors import (
     SelectSpec,
     SensorSpec,
     SwitchSpec,
+    read_block_path,
 )
 
 HVAC_OFF = "off"
@@ -68,9 +72,33 @@ P_LIM_1800 = 1800
 WATER_TEMP_ECO = 40
 WATER_TEMP_HOT = 60
 
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app ``NodeDataTrumaModel.toDataPayload`` parity.
+
+    Water and air are the ``TrumaWaterModel`` / ``TrumaAirModel`` sub-payloads
+    (note: the Combi writes ``target_temp``; only the CP+ variant uses
+    ``t_temp``).
+    """
+    return {
+        "comb_water": {
+            "state": read_block_path(data, "comb_water.state"),
+            "target_temp": read_block_path(data, "comb_water.target_temp"),
+            "p_lim": read_block_path(data, "comb_water.p_lim"),
+        },
+        "comb_air": {
+            "state": read_block_path(data, "comb_air.state"),
+            "mode": read_block_path(data, "comb_air.mode"),
+            "target_temp": read_block_path(data, "comb_air.target_temp"),
+        },
+        "energy_sel": read_block_path(data, "energy_sel"),
+    }
+
+
 TRUMA_COMBI_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.TRUMA_COMBI,
     name="Truma Combi",
+    command_block=_command_block,
     sensors=(
         SensorSpec(
             path="dev_stat",

@@ -21,22 +21,25 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .connect import (
     DEV_STAT_KEY,
+    config_gate_ok,
     connect_device_label,
     flatten_connect_capability,
     get_descriptor,
     has_descriptor,
     humanize_path,
+    is_path_available,
     read_dev_data_path,
     reconcile_gated_entities,
     resolve_connect_device,
 )
 from .connect.descriptors import ArraySensorSpec, EnumSensorSpec, SensorSpec
-from .connect.entity import resolve_entity_category, resolve_sensor_device_class
+from .connect.entity import resolve_entity_category, resolve_sensor_device_class, resolve_sensor_state_class
 from .const import (
     CONF_BRAIN_MAC,
     CONNECTION_INTERFACE_LABELS,
@@ -59,6 +62,32 @@ class RevotionSensorEntityDescription(SensorEntityDescription):
     data_index: int | None = None  # For array indexing (cur channels)
 
 
+# Default display precision (decimal places) by device class. Electrical
+# readings (V/A/W) arrive with long floating-point tails; HA otherwise shows the
+# raw value until the user adjusts each sensor by hand. Beta feedback (0.4.x):
+# default these to 2 decimals out of the box. This only sets the *suggested*
+# precision -- a user's manual per-entity override still wins.
+DEFAULT_DISPLAY_PRECISION: dict[SensorDeviceClass, int] = {
+    SensorDeviceClass.VOLTAGE: 2,
+    SensorDeviceClass.CURRENT: 2,
+    SensorDeviceClass.POWER: 2,
+}
+
+
+def default_display_precision(device_class: SensorDeviceClass | str | None) -> int | None:
+    """Return the default display precision for a device class, or None.
+
+    Accepts the enum, its string value, or None so it works for both the static
+    descriptions and the descriptor-driven Connect specs.
+    """
+    if device_class is None:
+        return None
+    try:
+        return DEFAULT_DISPLAY_PRECISION.get(SensorDeviceClass(device_class))
+    except ValueError:
+        return None
+
+
 # --- Temperature (Type 3) ---
 
 TEMPERATURE_DESCRIPTION = RevotionSensorEntityDescription(
@@ -78,6 +107,19 @@ LEVEL_DESCRIPTION = RevotionSensorEntityDescription(
     state_class=SensorStateClass.MEASUREMENT,
     translation_key="level",
     data_key="val",
+)
+
+# Raw sensor voltage in millivolts (Brain >= 2.3.3, Level node >= 2.3.x wire
+# delta; the app shows it in the tile dialog for calibration). Presence-gated
+# like total_cur: created only when the field is on the wire.
+LEVEL_VOLTAGE_DESCRIPTION = RevotionSensorEntityDescription(
+    key="level_voltage",
+    device_class=SensorDeviceClass.VOLTAGE,
+    native_unit_of_measurement="mV",
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    translation_key="level_voltage",
+    data_key="mvolt",
 )
 
 # --- Battery (Type 5) static sub-entity descriptions ---
@@ -178,6 +220,7 @@ class RevotionSwitchPowerSensor(RevotionCapabilityMixin, CoordinatorEntity[Revot
     _attr_device_class = SensorDeviceClass.POWER
     _attr_native_unit_of_measurement = "W"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = DEFAULT_DISPLAY_PRECISION[SensorDeviceClass.POWER]
 
     def __init__(
         self,
@@ -214,7 +257,7 @@ class RevotionSwitchPowerSensor(RevotionCapabilityMixin, CoordinatorEntity[Revot
         cur = cap.data.get("cur")
         if volt is None or cur is None:
             return None
-        return round(volt * cur, 1)
+        return round(volt * cur, 2)
 
 
 # --- HighCurrent (Type 8) static sub-entity descriptions ---
@@ -267,6 +310,30 @@ HIGHCURRENT_DESCRIPTIONS: tuple[RevotionSensorEntityDescription, ...] = (
         data_key="ch_total",
     ),
 )
+
+
+def _create_total_current_description(
+    capability: Capability,
+    prefix: str,
+) -> RevotionSensorEntityDescription | None:
+    """Create the total-current description when the wire carries the field.
+
+    ``total_cur`` (sum over all channels) is new with Brain firmware 2.3.3;
+    older brains never serialize the key. Presence-gated like the dynamic
+    current channels: the sensor exists only when the field is in the data, so
+    older fleets do not grow a permanently-unknown sensor (the app gates the
+    same value on Brain >= 2.3.3).
+    """
+    if "total_cur" not in capability.data:
+        return None
+    return RevotionSensorEntityDescription(
+        key=f"{prefix}_total_current",
+        device_class=SensorDeviceClass.CURRENT,
+        native_unit_of_measurement="A",
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key=f"{prefix}_total_current",
+        data_key="total_cur",
+    )
 
 
 def _create_current_channel_descriptions(
@@ -341,6 +408,14 @@ class RevotionSensorEntity(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
         self._node_mac = normalize_mac(node_mac)
         self._cap_index = cap_index
         self._brain_mac = normalize_mac(brain_mac)
+
+        # Default the display precision for electrical sensors (V/A/W) unless the
+        # description already pins one. _attr_* wins over entity_description, so
+        # only set it when the description leaves it unspecified.
+        if description.suggested_display_precision is None:
+            precision = default_display_precision(description.device_class)
+            if precision is not None:
+                self._attr_suggested_display_precision = precision
 
         # Use user-defined config name from app if available
         if config_name and sub_key:
@@ -493,12 +568,26 @@ class RevotionConnectDescriptorSensor(RevotionCapabilityMixin, CoordinatorEntity
         self._attr_device_class = resolve_sensor_device_class(spec.device_class)
         if spec.unit is not None:
             self._attr_native_unit_of_measurement = spec.unit
+        precision = default_display_precision(self._attr_device_class)
+        if precision is not None:
+            self._attr_suggested_display_precision = precision
         self._attr_entity_category = resolve_entity_category(spec.entity_category)
+        self._attr_state_class = resolve_sensor_state_class(spec.state_class)
 
     @property
     def available(self) -> bool:
-        """Return True if the node is reachable and the capability exists."""
-        return super().available and self._node_reachable() and self._find_capability() is not None
+        """Return True if the node is reachable and the capability exists.
+
+        ``available_path``-gated specs (CAN battery ``soh_av`` rows) are
+        presence-gated by the discovery listener; the extra check here only
+        covers the window between the flag flipping and the reconcile pass.
+        """
+        if not (super().available and self._node_reachable()):
+            return False
+        cap = self._find_capability()
+        if cap is None:
+            return False
+        return is_path_available(cap, self._spec.available_path)
 
     @property
     def native_value(self) -> float | int | str | None:
@@ -654,6 +743,9 @@ class RevotionConnectArraySensor(RevotionCapabilityMixin, CoordinatorEntity[Revo
         self._attr_device_class = resolve_sensor_device_class(spec.device_class)
         if spec.unit is not None:
             self._attr_native_unit_of_measurement = spec.unit
+        precision = default_display_precision(self._attr_device_class)
+        if precision is not None:
+            self._attr_suggested_display_precision = precision
         self._attr_entity_category = resolve_entity_category(spec.entity_category)
         if spec.device_class is not None or spec.unit is not None:
             self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -815,6 +907,20 @@ async def async_setup_entry(
                                 config_name=capability.config.name,
                             )
                         )
+                        # Raw sensor millivolts (Brain >= 2.3.3); older
+                        # firmware never serializes the key.
+                        if "mvolt" in capability.data:
+                            entities.append(
+                                RevotionSensorEntity(
+                                    coordinator=coordinator,
+                                    description=LEVEL_VOLTAGE_DESCRIPTION,
+                                    brain_mac=brain_mac,
+                                    node_mac=node.mac_address,
+                                    cap_index=capability.capability_index,
+                                    sub_key="voltage",
+                                    config_name=capability.config.name,
+                                )
+                            )
 
                     case CapabilityType.BATTERY:
                         # Static sub-entities (SOC, Voltage, Temp, etc.)
@@ -840,6 +946,19 @@ async def async_setup_entry(
                                     node_mac=node.mac_address,
                                     cap_index=capability.capability_index,
                                     sub_key=cur_desc.key.removeprefix("battery_"),
+                                    config_name=capability.config.name,
+                                )
+                            )
+                        # Total current over all channels (Brain >= 2.3.3)
+                        if (total_desc := _create_total_current_description(capability, "battery")) is not None:
+                            entities.append(
+                                RevotionSensorEntity(
+                                    coordinator=coordinator,
+                                    description=total_desc,
+                                    brain_mac=brain_mac,
+                                    node_mac=node.mac_address,
+                                    cap_index=capability.capability_index,
+                                    sub_key=total_desc.key.removeprefix("battery_"),
                                     config_name=capability.config.name,
                                 )
                             )
@@ -896,6 +1015,19 @@ async def async_setup_entry(
                                     config_name=capability.config.name,
                                 )
                             )
+                        # Total current over all channels (Brain >= 2.3.3)
+                        if (total_desc := _create_total_current_description(capability, "highcurrent")) is not None:
+                            entities.append(
+                                RevotionSensorEntity(
+                                    coordinator=coordinator,
+                                    description=total_desc,
+                                    brain_mac=brain_mac,
+                                    node_mac=node.mac_address,
+                                    cap_index=capability.capability_index,
+                                    sub_key=total_desc.key.removeprefix("highcurrent_"),
+                                    config_name=capability.config.name,
+                                )
+                            )
 
         if entities:
             async_add_entities(entities)
@@ -910,7 +1042,10 @@ async def async_setup_entry(
     # removed from the data drop their entities, see binary_sensor.py).
     known_connect_paths: set[tuple[str, int, str]] = set()
     brain_norm = normalize_mac(brain_mac)
-    array_entities: dict[tuple[str, int, str], SensorEntity] = {}
+    # Reconciled (presence-gated) Connect sensors: array elements AND plain
+    # specs carrying an available_path / config_gate share one dict + candidate
+    # list, so both are created/removed by the same reconcile pass.
+    gated_entities: dict[tuple[str, int, str], SensorEntity] = {}
 
     def _make_array_sensor(node, capability, array_spec, index):
         """Bind a per-element factory (own scope avoids late-binding in the loop)."""
@@ -928,6 +1063,57 @@ async def async_setup_entry(
             )
 
         return factory
+
+    def _make_descriptor_sensor(node, capability, spec):
+        """Bind a per-spec factory for a gated descriptor sensor."""
+
+        def factory() -> RevotionConnectDescriptorSensor:
+            register_node_device(hass, entry, node, brain_mac)
+            return RevotionConnectDescriptorSensor(
+                coordinator=coordinator,
+                brain_mac=brain_mac,
+                node_mac=node.mac_address,
+                cap_index=capability.capability_index,
+                spec=spec,
+                config_name=capability.config.name,
+            )
+
+        return factory
+
+    # (node, cap) pairs whose stale generic-mirror rows were already swept.
+    swept_generic: set[tuple[str, int]] = set()
+
+    def _sweep_generic_mirror_rows(node_mac: str, capability, descriptor) -> None:
+        """Remove registry rows left behind by the Phase 0 generic mirror.
+
+        When a device code gains a tailored descriptor in an upgrade (VE.Direct
+        BMV in 0.4.x), the generic mirror's ``..._{flat_path}`` sensor rows for
+        that (node, cap) stay in the entity registry and show up as permanently
+        "unavailable" ghosts next to the new named entities. Sweep every sensor
+        row under this capability's unique_id prefix whose suffix is not one of
+        the descriptor's own sensor keys. Runs once per (node, cap) per session.
+        """
+        key = (node_mac, capability.capability_index)
+        if key in swept_generic:
+            return
+        swept_generic.add(key)
+        legal = {spec.key for spec in descriptor.sensors}
+        legal |= {spec.key for spec in descriptor.enum_sensors}
+        for array_spec in descriptor.array_sensors:
+            legal |= {f"{array_spec.key_prefix}_{n}" for n in range(1, array_spec.max_elements + 1)}
+        prefix = f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}_"
+        registry = er.async_get(hass)
+        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if reg_entry.domain != "sensor" or not reg_entry.unique_id.startswith(prefix):
+                continue
+            if reg_entry.unique_id.removeprefix(prefix) in legal:
+                continue
+            _LOGGER.info(
+                "Removing stale generic-mirror sensor %s (device %d now has a descriptor)",
+                reg_entry.entity_id,
+                descriptor.device,
+            )
+            registry.async_remove(reg_entry.entity_id)
 
     def _check_connect() -> None:
         """Create Connect sensors once a device code resolves.
@@ -962,8 +1148,21 @@ async def async_setup_entry(
                 if has_descriptor(device_code):
                     descriptor = get_descriptor(device_code)
                     assert descriptor is not None  # has_descriptor guarantees it
+                    _sweep_generic_mirror_rows(node_mac, capability, descriptor)
                     for spec in descriptor.sensors:
                         key = (node_mac, capability.capability_index, spec.key)
+                        if spec.available_path is not None or spec.config_gate is not None:
+                            # Gated spec (CAN battery *_av rows, BMV aux_typ /
+                            # dc_meter rows): presence-reconciled like array
+                            # elements so a flag flip adds/removes the entity.
+                            present = is_path_available(capability, spec.available_path) and config_gate_ok(
+                                capability, spec.config_gate
+                            )
+                            unique_id = f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}_{spec.key}"
+                            array_candidates.append(
+                                (key, present, unique_id, _make_descriptor_sensor(node, capability, spec))
+                            )
+                            continue
                         if key in known_connect_paths:
                             continue
                         known_connect_paths.add(key)
@@ -1042,7 +1241,7 @@ async def async_setup_entry(
         reconcile_gated_entities(
             hass=hass,
             entity_domain="sensor",
-            entities=array_entities,
+            entities=gated_entities,
             current_macs=current_macs,
             candidates=array_candidates,
             async_add_entities=async_add_entities,

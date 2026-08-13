@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,6 +23,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api_client import RevotionApiClient, RevotionAuthError, RevotionConnectionError
 from .const import (
+    ACK_STATE_FAILED,
     CONF_BRAIN_MAC,
     CONF_BRAIN_NAME,
     DOMAIN,
@@ -29,7 +31,16 @@ from .const import (
     ConnectionInterface,
     RevotionConfigEntry,
 )
-from .models import Brain, CapabilityConfig, find_node, normalize_mac
+from .models import (
+    COMMAND_TIMEOUT_S,
+    Brain,
+    CapabilityConfig,
+    CommandAck,
+    deep_merge_dev_data,
+    dev_data_fragment_confirmed,
+    find_node,
+    normalize_mac,
+)
 from .mqtt_client import RevotionMqttClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,6 +92,68 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
         self._rest_poll_errors: int = 0
         # Coalesce a burst of MQTT /config notifications into one REST re-pull.
         self._config_resync_scheduled: bool = False
+        # Latest CMD_ACK per (node mac, cap_index), Brain >= 2.3.3. Command
+        # hosts consume them (each at most once, via seq) from
+        # process_command_ack(); older brains never publish on {mac}/ack.
+        self._command_acks: dict[tuple[str, int], CommandAck] = {}
+        self._ack_seq: int = 0
+        # Still-pending commanded dev_data fragments per (node mac, cap_index).
+        # Full-block command builders (ConnectCommandMixin) merge this over the
+        # last *received* dev_data before rebuilding the complete control
+        # block, so a second command from a sibling entity (e.g. the water
+        # switch right after the water target-temp number) does not revert an
+        # in-flight change that has not echoed back yet. Cleared once the data
+        # echo confirms every fragment leaf, on a failed CMD_ACK, or after the
+        # command-timeout window.
+        self._command_overlays: dict[tuple[str, int], tuple[dict[str, Any], float]] = {}
+
+    def get_command_ack(self, node_mac: str, cap_index: int) -> CommandAck | None:
+        """Return the latest CMD_ACK for a (node, capability), or ``None``."""
+        return self._command_acks.get((normalize_mac(node_mac), cap_index))
+
+    def note_command_fragment(self, node_mac: str, cap_index: int, dev_data: dict[str, Any]) -> None:
+        """Remember just-commanded dev_data fields until their echo confirms.
+
+        Fragments accumulate (deep-merged, newest wins) so several pending
+        commands from different entities of one device stack up. Only called
+        for devices with a full-block builder; command-code payloads
+        (Thitronik) never mirror state and must not be replayed.
+        """
+        key = (normalize_mac(node_mac), cap_index)
+        existing = self._command_overlays.get(key)
+        merged = deep_merge_dev_data(existing[0], dev_data) if existing else dict(dev_data)
+        self._command_overlays[key] = (merged, time.monotonic())
+
+    def get_command_overlay(self, node_mac: str, cap_index: int) -> dict[str, Any] | None:
+        """Return pending commanded fields for a (node, capability), or ``None``.
+
+        Expires after the 60 s command-timeout window: by then every pending
+        entity has either been confirmed or reverted, and replaying older
+        fragments would override changes made at the device panel.
+        """
+        key = (normalize_mac(node_mac), cap_index)
+        entry = self._command_overlays.get(key)
+        if entry is None:
+            return None
+        fragment, noted_at = entry
+        if time.monotonic() - noted_at > COMMAND_TIMEOUT_S:
+            del self._command_overlays[key]
+            return None
+        return fragment
+
+    def _discard_confirmed_overlay(self, node_mac: str, cap_index: int, dev_data: Any) -> None:
+        """Drop the pending-command overlay once fresh data confirms it.
+
+        Called wherever received data replaces ``capability.data`` (MQTT push
+        and REST poll). Only a *full* match clears -- a partial one means
+        another command is still in flight and its fragment must survive.
+        """
+        key = (normalize_mac(node_mac), cap_index)
+        entry = self._command_overlays.get(key)
+        if entry is None or not isinstance(dev_data, dict):
+            return
+        if dev_data_fragment_confirmed(entry[0], dev_data):
+            del self._command_overlays[key]
 
     def record_error(self, error_type: str, detail: str) -> None:
         """Record an error for diagnostics (D-03)."""
@@ -357,6 +430,8 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
                 self._gps_data = data
                 _LOGGER.debug("GPS data received for Brain %s", self._brain_mac)
                 self.async_set_updated_data(self.data)
+            case "ack":
+                self._handle_ack_payload(data)
             case "error":
                 self._handle_error_payload(data)
             case "pair":
@@ -374,6 +449,42 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
                 return
 
         self.async_set_updated_data(self.data)
+
+    def _handle_ack_payload(self, data: dict[str, Any]) -> None:
+        """Store a CMD_ACK from ``{brain-mac}/ack`` (Brain >= 2.3.3).
+
+        Wire shape (docs/cmd_ack.md): ``{"type": 0, "mac": "AA:BB:..",
+        "cap_index": 1, "state": 0|1|2|3, "time_s"?: n, "reason"?: n}``.
+        ``cap_index`` is absent only for find-me (type 3), which this
+        integration never sends -- such acks are ignored. Only the latest ack
+        per (node, cap) is kept; the lifecycle guarantees exactly one terminal
+        ack per command, and the mixins consume each stored ack at most once
+        (seq). The subsequent ``async_set_updated_data`` in
+        :meth:`handle_mqtt_message` fires the entity listeners.
+        """
+        mac = data.get("mac")
+        cap_index = data.get("cap_index")
+        state = data.get("state")
+        if not isinstance(mac, str) or not isinstance(cap_index, int) or not isinstance(state, int):
+            _LOGGER.debug("Ignoring malformed CMD_ACK payload: %s", data)
+            return
+        self._ack_seq += 1
+        ack = CommandAck(
+            seq=self._ack_seq,
+            ack_type=int(data.get("type", 0)),
+            state=state,
+            reason=data.get("reason"),
+            time_s=data.get("time_s"),
+            received_at=time.monotonic(),
+        )
+        self._command_acks[(normalize_mac(mac), cap_index)] = ack
+        if state == ACK_STATE_FAILED:
+            # The command never reached the node -- its entities revert, so the
+            # pending overlay must not resurrect the failed values either.
+            # Conservatively drops sibling fragments too (base falls back to
+            # the last received data, i.e. pre-full-block behaviour).
+            self._command_overlays.pop((normalize_mac(mac), cap_index), None)
+        _LOGGER.debug("CMD_ACK for %s/%d: state=%d reason=%s time_s=%s", mac, cap_index, state, ack.reason, ack.time_s)
 
     def _handle_data_payload(self, data: dict[str, Any]) -> None:
         """Update node capability data from MQTT data payload.
@@ -399,6 +510,7 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
                 for capability in node.capabilities:
                     if capability.capability_index == cap_index:
                         capability.data = payload
+                        self._discard_confirmed_overlay(mac, cap_index, payload.get("dev_data"))
                         return
                 _LOGGER.debug(
                     "Capability index %s not found on node %s",
@@ -585,6 +697,7 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
                         for capability in node.capabilities:
                             if capability.capability_index == cap_index:
                                 capability.data = payload
+                                self._discard_confirmed_overlay(entry_mac, cap_index, payload.get("dev_data"))
                                 applied += 1
                                 break
                         break

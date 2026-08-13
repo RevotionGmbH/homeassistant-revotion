@@ -38,13 +38,18 @@ Lights: ex_light (plain on/off) and in_light + in_light_lv (dimmable, levels
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
 from ..descriptors import (
     BinarySensorSpec,
     ClimateSpec,
     ConnectDeviceDescriptor,
     LightSpec,
+    NumberSpec,
     SensorSpec,
+    read_block_path,
 )
 
 HVAC_OFF = "off"
@@ -75,9 +80,34 @@ SPEED_TURBO = 3
 # Interior light brightness levels (app InternalLight: 0 off, 1 half, 2 full).
 IN_LIGHT_MAX = 2
 
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app ``NodeDataDometicFreshjetModel.toDataPayload`` parity.
+
+    ``current_limit`` is included only when the device reports the FID-0x0007
+    availability flag, exactly like the app (``if (currentLimitAvailable)``);
+    non-capable devices would ignore it, but the omission keeps byte parity.
+    """
+    block: dict[str, Any] = {
+        "state": read_block_path(data, "state"),
+        "target_temp": read_block_path(data, "target_temp"),
+        "ac_mode": read_block_path(data, "ac_mode"),
+        "ex_light": read_block_path(data, "ex_light"),
+        "fan_speed": read_block_path(data, "fan_speed"),
+        "fan_auto": read_block_path(data, "fan_auto"),
+        "in_light_lv": read_block_path(data, "in_light_lv"),
+        "in_light": read_block_path(data, "in_light"),
+    }
+    if read_block_path(data, "current_limit_av") in (1, True, "1"):
+        block["current_limit"] = read_block_path(data, "current_limit")
+    block["sleep_mode"] = read_block_path(data, "sleep_mode")
+    return block
+
+
 FRESHJET_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.DOMETIC_FRESHJET,
     name="Dometic FreshJet",
+    command_block=_command_block,
     sensors=(
         SensorSpec(
             path="dev_stat",
@@ -184,6 +214,27 @@ FRESHJET_DESCRIPTOR = ConnectDeviceDescriptor(
         ),
     ),
     # No switches: sleep_mode is deliberately a read-only binary sensor.
+    numbers=(
+        # Max. shore-input current (FID 0x0007), firmware 2.3.3 additive wire
+        # delta: writable 1-15 A, presence-gated on current_limit_av. The
+        # device clamps to the next lower valid step and reports the readback;
+        # 15 means "unlimited" in the app -- the raw ampere value is exposed
+        # here (dometic_freshjet_tile_dialog.dart).
+        NumberSpec(
+            key="current_limit",
+            name="Max input current",
+            path="current_limit",
+            write_path="current_limit",
+            min_value=1,
+            max_value=15,
+            step=1,
+            unit="A",
+            device_class="current",
+            mode="slider",
+            as_int=True,
+            available_path="current_limit_av",
+        ),
+    ),
     lights=(
         LightSpec(
             key="exterior_light",

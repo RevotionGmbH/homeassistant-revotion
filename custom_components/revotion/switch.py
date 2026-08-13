@@ -16,7 +16,6 @@ while the echo is still in flight.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any
@@ -29,6 +28,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .connect import (
     bool_to_int01,
+    config_gate_ok,
     get_descriptor,
     has_descriptor,
     int01_to_bool,
@@ -51,9 +51,11 @@ from .const import (
 from .coordinator import RevotionCoordinator
 from .models import (
     RevotionCapabilityMixin,
+    dump_wire_json,
     format_mac_for_display,
     format_timer_attributes,
     normalize_mac,
+    process_command_ack,
     register_node_device,
 )
 from .mqtt_client import RevotionMqttClient
@@ -109,6 +111,7 @@ class RevotionSwitchEntity(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
         self._command_sent_at: float | None = None
         self._command_pending: bool = False
         self._timeout_cancel: CALLBACK_TYPE | None = None
+        self._last_ack_seq: int | None = None
         if config_name:
             self._attr_name = config_name
         elif channel is not None:
@@ -129,8 +132,10 @@ class RevotionSwitchEntity(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
         Clearing unconditionally would drop the optimistic state while the
         echo is still in flight over LTE-M and bounce the UI back to the
         stale value, so the state is kept until the data matches the
-        commanded value (or the 60 s timeout reverts it).
+        commanded value (or the 60 s timeout reverts it). A CMD_ACK
+        (Brain >= 2.3.3) accelerates the lifecycle (see process_command_ack).
         """
+        process_command_ack(self, revert=self._drop_optimistic, timeout_cb=self._handle_command_timeout)
         if self._optimistic_confirmed():
             if self._command_sent_at is not None:
                 elapsed = time.monotonic() - self._command_sent_at
@@ -146,6 +151,10 @@ class RevotionSwitchEntity(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
             self._command_pending = False
             self._optimistic_state = None
         super()._handle_coordinator_update()
+
+    def _drop_optimistic(self) -> None:
+        """Drop the optimistic assumption (CMD_ACK failed revert)."""
+        self._optimistic_state = None
 
     def _optimistic_confirmed(self) -> bool:
         """Return True once capability data matches the optimistic state.
@@ -216,6 +225,9 @@ class RevotionSwitchEntity(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
                 translation_placeholders={"entity": entity_name},
             )
         topic = TOPIC_CONTROL_DATA.format(mac=self._brain_mac)
+        # Opt into the CMD_ACK lifecycle (Brain >= 2.3.3); older brains ignore
+        # unknown keys.
+        payload = {**payload, "ack": True}
         self._command_sent_at = time.monotonic()
         self._command_pending = True
         if self._timeout_cancel is not None:
@@ -229,7 +241,7 @@ class RevotionSwitchEntity(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
             payload,
         )
         try:
-            await self._mqtt_client.async_publish(topic, json.dumps(payload))
+            await self._mqtt_client.async_publish(topic, dump_wire_json(payload))
         except Exception:
             self._command_pending = False
             self._command_sent_at = None
@@ -550,7 +562,9 @@ async def async_setup_entry(
                 assert descriptor is not None
                 for spec in descriptor.switches:
                     key = (node_mac, capability.capability_index, spec.key)
-                    present = is_path_available(capability, spec.available_path)
+                    present = is_path_available(capability, spec.available_path) and config_gate_ok(
+                        capability, spec.config_gate
+                    )
                     unique_id = f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}_{spec.key}"
                     candidates.append(
                         (key, present, unique_id, _make_connect_switch(node, capability, device_code, spec))

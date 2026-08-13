@@ -43,6 +43,9 @@ ElectricPowerSetting / FuelPowerSetting, integer steps).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
 from ..descriptors import (
     BinarySensorSpec,
@@ -53,6 +56,7 @@ from ..descriptors import (
     SelectSpec,
     SensorSpec,
     SwitchSpec,
+    read_block_path,
 )
 
 HVAC_OFF = "off"
@@ -68,9 +72,27 @@ WATER_NORMAL = 1
 WATER_BOOST = 2
 WATER_AUTO = 3
 
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app ``NodeDataAldeModel.toDataPayload`` parity."""
+    return {
+        "state": read_block_path(data, "state"),
+        "z1_t_temp": read_block_path(data, "z1_t_temp"),
+        "z2_t_temp": read_block_path(data, "z2_t_temp"),
+        "gas_running": read_block_path(data, "gas_running"),
+        "energy_prio_el": read_block_path(data, "energy_prio_el"),
+        "e_power_set": read_block_path(data, "e_power_set"),
+        "water_setting": read_block_path(data, "water_setting"),
+        "water_state": read_block_path(data, "water_state"),
+        "ac_auto_ctr": read_block_path(data, "ac_auto_ctr"),
+        "f_power_set": read_block_path(data, "f_power_set"),
+    }
+
+
 ALDE_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.ALDE,
     name="Alde 3030",
+    command_block=_command_block,
     sensors=(
         SensorSpec(path="dev_stat", key="dev_stat", name="Device status", entity_category="diagnostic"),
         SensorSpec(path="out_temp", key="out_temp", name="Outdoor temperature", device_class="temperature", unit="°C"),

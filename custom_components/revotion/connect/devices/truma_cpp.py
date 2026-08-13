@@ -56,6 +56,9 @@ level_min=20) gated by air_con.light_av.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
 from ..descriptors import (
     BinarySensorSpec,
@@ -66,6 +69,7 @@ from ..descriptors import (
     SelectSpec,
     SensorSpec,
     SwitchSpec,
+    read_block_path,
 )
 
 HVAC_OFF = "off"
@@ -103,9 +107,47 @@ P_LIM_1800 = 1800
 # Interior light brightness max (Truma light_bri; range assumed 0..100, TO VERIFY).
 LIGHT_BRI_MAX = 100
 
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app ``NodeDataTrumaCpplusModel.toDataPayload`` parity.
+
+    ``heater`` is the CP+ ``TrumaHeaterModel`` sub-payload (itself the full
+    Combi-style water/air/energy block, but with ``t_temp`` keys); ``air_con``
+    is the ``TrumaAirConModel`` sub-payload, which mirrors ``dev_stat`` and
+    ``ac_pow`` like the app does.
+    """
+    return {
+        "heater": {
+            "comb_water": {
+                "state": read_block_path(data, "heater.comb_water.state"),
+                "t_temp": read_block_path(data, "heater.comb_water.t_temp"),
+                "p_lim": read_block_path(data, "heater.comb_water.p_lim"),
+            },
+            "comb_air": {
+                "state": read_block_path(data, "heater.comb_air.state"),
+                "t_temp": read_block_path(data, "heater.comb_air.t_temp"),
+            },
+            "energy_sel": read_block_path(data, "heater.energy_sel"),
+        },
+        "air_con": {
+            "state": read_block_path(data, "air_con.state"),
+            "dev_stat": read_block_path(data, "air_con.dev_stat"),
+            "t_temp": read_block_path(data, "air_con.t_temp"),
+            "fan_mode": read_block_path(data, "air_con.fan_mode"),
+            "ac_mode": read_block_path(data, "air_con.ac_mode"),
+            "light": read_block_path(data, "air_con.light"),
+            "light_bri": read_block_path(data, "air_con.light_bri"),
+            "ac_pow": read_block_path(data, "air_con.ac_pow"),
+        },
+        "auto_mode": read_block_path(data, "auto_mode"),
+        "auto_t_temp": read_block_path(data, "auto_t_temp"),
+    }
+
+
 TRUMA_CPP_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.TRUMA_CPP,
     name="Truma CP Plus",
+    command_block=_command_block,
     sensors=(
         SensorSpec(path="heater.dev_stat", key="heater_dev_stat", name="Heater status", entity_category="diagnostic"),
         SensorSpec(

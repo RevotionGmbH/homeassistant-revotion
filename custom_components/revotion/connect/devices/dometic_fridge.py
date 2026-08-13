@@ -42,6 +42,9 @@ None, no crash). TO VERIFY against a live device.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
 from ..descriptors import (
     BinarySensorSpec,
@@ -50,6 +53,7 @@ from ..descriptors import (
     NumberSpec,
     SelectSpec,
     SensorSpec,
+    read_block_path,
 )
 
 HVAC_OFF = "off"
@@ -64,9 +68,30 @@ MODE_TURBO = 3
 SEND_MODE_FAN_SPEED = 0
 SEND_MODE_TARGET_TEMP = 1
 
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app compressor-fridge ``toDataPayload`` parity.
+
+    Mirrors the app's ``send_mode`` split: level control sends ``fan_speed``,
+    temperature control sends ``target_temp`` -- never both. A command that
+    explicitly writes the other field anyway (climate set while in level mode)
+    still reaches the wire via the fragment merge in ``_expand_command_block``.
+    """
+    send_mode = read_block_path(data, "send_mode")
+    block: dict[str, Any] = {"state": read_block_path(data, "state")}
+    if send_mode == SEND_MODE_FAN_SPEED:
+        block["fan_speed"] = read_block_path(data, "fan_speed")
+    else:
+        block["target_temp"] = read_block_path(data, "target_temp")
+    block["send_mode"] = send_mode
+    block["mode"] = read_block_path(data, "mode")
+    return block
+
+
 FRIDGE_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.DOMETIC_FRIDGE,
     name="Dometic Fridge",
+    command_block=_command_block,
     sensors=(
         SensorSpec(path="dev_stat", key="dev_stat", name="Device status", entity_category="diagnostic"),
         SensorSpec(path="err.err_code", key="err_code", name="Error code", entity_category="diagnostic"),

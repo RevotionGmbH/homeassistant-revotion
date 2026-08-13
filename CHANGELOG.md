@@ -4,6 +4,23 @@ All notable changes to the Revotion Home Assistant integration are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/); the version
 is the release tag and matches `manifest.json` (pre-releases use PEP 440 style, e.g. `0.4.0b1`).
 
+## 0.5.0b0 — 2026-08-13
+
+Third pre-release.
+
+### Added
+- Victron energy family (requires Brain firmware 2.3.3): BMV / SmartShunt battery monitors (incl. DC-meter mode and the remote-controllable relay), MPPT solar chargers (incl. load output control), Orion XS DC-DC chargers, Phoenix chargers and inverters, and CAN (BMS) batteries — each as its own device with tailored sensors and controls, mirroring the Revotion app's Energy widget
+- Total current sensor for battery and high-current nodes (sum over all channels; Brain firmware 2.3.3)
+- Dometic FreshJet: max. shore input current is now adjustable (1–15 A, on capable units)
+- Level sensors expose the raw probe voltage as a diagnostic sensor (Brain firmware 2.3.3)
+- Commands are now acknowledged by the Brain (firmware 2.3.3): a failed command reverts and notifies immediately instead of after 60 s, and a command for a sleeping node waits for the node's next wake-up instead of timing out
+
+### Changed
+- Electrical sensors (voltage, current, power) now default to 2 decimal places, so values are readable out of the box without adjusting each sensor's display precision by hand (you can still override it per entity)
+
+### Fixed
+- Commands now always send the device's complete control state (like the Revotion app) instead of only the changed value — previously, toggling e.g. the Truma water heater could reset other settings on the device (heating mode, target temperature, fan or sleep mode) to zero
+
 ## 0.4.0b1 — 2026-06-12
 
 Second pre-release.

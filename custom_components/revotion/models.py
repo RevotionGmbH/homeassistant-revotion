@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -14,7 +15,12 @@ from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.helpers.event import async_call_later
 
 from .const import (
+    ACK_FAILURE_REASONS,
+    ACK_STATE_DELIVERED,
+    ACK_STATE_FAILED,
+    ACK_STATE_QUEUED,
     CAPABILITY_TYPE_LABELS,
+    COMMAND_FAILED_MESSAGE,
     COMMAND_TIMEOUT_MESSAGE,
     DOMAIN,
     MANUFACTURER,
@@ -43,6 +49,76 @@ def normalize_mac(mac: str) -> str:
     Output: 'aabbccddeeff'
     """
     return mac.lower().replace(":", "").replace("-", "")
+
+
+def dump_wire_json(payload: dict[str, Any]) -> str:
+    """Serialize an MQTT wire payload as compact JSON (no whitespace).
+
+    Python's ``json.dumps`` default separators insert a space after ``:`` and
+    ``,``; the firmware and the app emit compact JSON. Commands are the only
+    traffic this integration causes on the Brain's metered LTE-M SIM, so the
+    wasted bytes are real -- every ``ctr_data`` publish goes through here.
+    """
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def deep_merge_dev_data(base: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
+    """Return ``base`` with ``changes`` merged on top, nesting into sub-dicts.
+
+    The building block of full-control-block commands: nested branches
+    (``comb_water``, ``air_con``) merge key-by-key instead of being replaced,
+    so ``{"comb_water": {"state": 0}}`` over a full water block only flips
+    ``state``. Non-dict leaves in ``changes`` always win. Inputs are never
+    mutated.
+    """
+    merged: dict[str, Any] = dict(base)
+    for key, value in changes.items():
+        current = merged.get(key)
+        if isinstance(value, Mapping) and isinstance(current, Mapping):
+            merged[key] = deep_merge_dev_data(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def dev_data_fragment_confirmed(fragment: Mapping[str, Any], dev_data: Mapping[str, Any]) -> bool:
+    """Return whether ``dev_data`` reports every leaf of a commanded fragment.
+
+    The echo test for pending-command overlays: only when *all* commanded
+    leaves match the received data is the command round-trip complete.
+    Numeric comparison is Python ``==`` (``40 == 40.0``), matching the
+    per-entity ``_optimistic_confirmed`` checks.
+    """
+    for key, value in fragment.items():
+        if isinstance(value, Mapping):
+            child = dev_data.get(key)
+            if not isinstance(child, Mapping) or not dev_data_fragment_confirmed(value, child):
+                return False
+        elif dev_data.get(key) != value:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class CommandAck:
+    """One CMD_ACK received on ``{brain-mac}/ack`` (Brain >= 2.3.3).
+
+    The brain acknowledges an opt-in (``"ack": true``) data command in up to
+    two stages: ``queued`` (target asleep, carries the remaining sleep in
+    ``time_s``) followed by exactly one terminal ``delivered`` / ``failed``
+    (``reason`` code). See Brain_v2_ESPNOW docs/cmd_ack.md for the wire
+    contract. The coordinator keeps the latest ack per (node, cap_index);
+    ``seq`` lets a command host consume each ack exactly once.
+    """
+
+    seq: int
+    ack_type: int
+    state: int
+    reason: int | None = None
+    time_s: int | None = None
+    # time.monotonic() at receipt -- compared against _command_sent_at so an
+    # ack from before the current command is never mis-consumed.
+    received_at: float = 0.0
 
 
 def format_mac_for_display(mac: str) -> str:
@@ -374,6 +450,99 @@ class RevotionCapabilityMixin:
         }
 
 
+def process_command_ack(host: Any, revert: Any, timeout_cb: Any) -> bool:
+    """Consume a pending CMD_ACK for a command host's (node, cap_index).
+
+    Shared by all three command paths (native switch inline copy,
+    RevotionCommandMixin, ConnectCommandMixin) -- duck-typed on the members
+    they all carry: ``coordinator``, ``_node_mac``, ``_cap_index``,
+    ``_command_pending``, ``_command_sent_at``, ``_timeout_cancel``, ``hass``.
+
+    Semantics (docs/cmd_ack.md; the ACK is an *accelerator* on top of the
+    echo/timeout machinery -- QoS 0 best-effort, older brains never send one):
+
+    - ``queued``: target asleep; the command outlives the normal 60 s window,
+      so the timeout is rescheduled to remaining-sleep + 60 s. Optimistic
+      state and lock stay.
+    - ``delivered``: the node's radio acked. Lock + timeout are released (next
+      command may go out) but the optimistic value stays until the data echo
+      confirms it -- clearing it here would bounce the UI to the stale value.
+    - ``failed``: terminal. Lock released, optimistic reverted via ``revert``,
+      user notified immediately (instead of after the 60 s timeout).
+
+    ``timeout_cb`` is the host's existing timeout callback (used for the
+    queued reschedule). Returns True when the ack changed host state (caller
+    writes HA state as needed). Each ack is consumed at most once per host via
+    its ``seq``.
+    """
+    if not getattr(host, "_command_pending", False) or host._command_sent_at is None:
+        return False
+    ack = host.coordinator.get_command_ack(host._node_mac, host._cap_index)
+    if ack is None or ack.received_at < host._command_sent_at:
+        return False
+    if getattr(host, "_last_ack_seq", None) == ack.seq:
+        return False
+    host._last_ack_seq = ack.seq
+
+    entity_name = host.name or host.entity_id or host.unique_id
+
+    if ack.state == ACK_STATE_QUEUED:
+        # Node asleep -- the brain holds the command until the next wake.
+        extension = (ack.time_s or 0) + COMMAND_TIMEOUT_S
+        if host._timeout_cancel is not None:
+            host._timeout_cancel()
+            host._timeout_cancel = None
+        if host.hass is not None:
+            host._timeout_cancel = async_call_later(host.hass, extension, timeout_cb)
+        _LOGGER.debug(
+            "ACK QUEUED %s: node asleep, %ss remaining -- timeout extended to %ss",
+            entity_name,
+            ack.time_s,
+            extension,
+        )
+        return True
+
+    if ack.state == ACK_STATE_DELIVERED:
+        if host._command_sent_at is not None:
+            _LOGGER.debug(
+                "ACK DELIVERED %s: %.2fs (command -> radio ack)",
+                entity_name,
+                time.monotonic() - host._command_sent_at,
+            )
+        host._command_sent_at = None
+        host._command_pending = False
+        if host._timeout_cancel is not None:
+            host._timeout_cancel()
+            host._timeout_cancel = None
+        return True
+
+    if ack.state == ACK_STATE_FAILED:
+        host._command_sent_at = None
+        host._command_pending = False
+        if host._timeout_cancel is not None:
+            host._timeout_cancel()
+            host._timeout_cancel = None
+        revert()
+        reason = ACK_FAILURE_REASONS.get(ack.reason or 0, f"failure code {ack.reason}")
+        _LOGGER.warning("ACK FAILED %s: %s", entity_name, reason)
+        if host.hass is not None:
+            host.hass.async_create_task(
+                host.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "Revotion Command Failed",
+                        "message": COMMAND_FAILED_MESSAGE.format(entity=entity_name, reason=reason),
+                        "notification_id": f"revotion_timeout_{host.unique_id}",
+                    },
+                )
+            )
+        return True
+
+    # ACK_STATE_APPLIED (calibration) and unknown future states: nothing to do.
+    return False
+
+
 class RevotionCommandMixin:
     """Optimistic MQTT-command publishing for writable native capabilities.
 
@@ -413,6 +582,7 @@ class RevotionCommandMixin:
         self._command_sent_at: float | None = None
         self._command_pending: bool = False
         self._timeout_cancel: CALLBACK_TYPE | None = None
+        self._last_ack_seq: int | None = None
 
     def _cancel_command_timeout(self) -> None:
         """Cancel the pending command-timeout callback, if any."""
@@ -505,7 +675,12 @@ class RevotionCommandMixin:
         real echo is still in flight over LTE-M -- the UI would bounce back to
         the stale value. Instead the state is kept until the data actually
         matches (or the 60 s timeout reverts it).
+
+        A CMD_ACK (Brain >= 2.3.3) accelerates this: queued extends the
+        timeout for a sleeping node, delivered releases the lock early, failed
+        reverts immediately (see :func:`process_command_ack`).
         """
+        process_command_ack(self, revert=self._revert_optimistic, timeout_cb=self._on_command_timeout)
         if self._optimistic_confirmed():
             self._clear_command_lock()
             self._revert_optimistic()
@@ -531,6 +706,9 @@ class RevotionCommandMixin:
             )
 
         topic = TOPIC_CONTROL_DATA.format(mac=self._brain_mac)
+        # Opt into the CMD_ACK lifecycle (Brain >= 2.3.3). Older brains ignore
+        # unknown keys (forward-compat contract), so this is always safe.
+        payload = {**payload, "ack": True}
         self._command_sent_at = time.monotonic()
         self._command_pending = True
         self._cancel_command_timeout()
@@ -547,7 +725,7 @@ class RevotionCommandMixin:
             payload,
         )
         try:
-            await self._mqtt_client.async_publish(topic, json.dumps(payload))  # type: ignore[attr-defined]
+            await self._mqtt_client.async_publish(topic, dump_wire_json(payload))  # type: ignore[attr-defined]
         except Exception:
             self._command_pending = False
             self._command_sent_at = None

@@ -152,8 +152,9 @@ THITRONIK_DESCRIPTOR = ConnectDeviceDescriptor(
         # Magnet contacts: one binary_sensor per stat[] element (firmware
         # ``thitronik_sensor.status``). "opening" is the closest HA device class
         # for a magnet door/window contact (on == open).
-        # POLARITY TO VERIFY: whether wire 1 means "open" or "closed" is not
-        # documented in the firmware; confirm against a live device.
+        # Polarity verified against the app (thitronik_config_widget.dart,
+        # app PR #927): stat[i] == 1 renders the OPEN lock icon in error red,
+        # 0 the closed one -- wire 1 == open, matching this device_class.
         ArrayBinarySensorSpec(
             array_key="stat",
             key_prefix="contact",
@@ -167,9 +168,10 @@ THITRONIK_DESCRIPTOR = ConnectDeviceDescriptor(
         # Per-sensor battery health (firmware ``thitronik_sensor.battery``,
         # parallel to stat[]). device_class "battery" means on == low battery.
         # POLARITY TO VERIFY: the firmware field is a bare bool with no
-        # documented polarity -- whether wire 1 means "battery ok" or "battery
-        # low" must be confirmed against a live device; if it is "ok", this
-        # device_class (and the decode) needs inverting.
+        # documented polarity, and the app never renders bat[] anywhere
+        # (checked 2026-08-13, app 1.2.11) -- whether wire 1 means "battery
+        # ok" or "battery low" must be confirmed against a live device; if it
+        # is "ok", this device_class (and the decode) needs inverting.
         ArrayBinarySensorSpec(
             array_key="bat",
             key_prefix="sensor_battery",

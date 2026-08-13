@@ -34,6 +34,9 @@ mirroring the native battery current-channel pattern.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
 from ..descriptors import (
     ArraySensorSpec,
@@ -41,11 +44,24 @@ from ..descriptors import (
     NumberSpec,
     SensorSpec,
     SwitchSpec,
+    read_block_path,
 )
+
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app ``NodeDataEcoflowModel.toDataPayload`` parity."""
+    return {
+        "state_AC": read_block_path(data, "state_AC"),
+        "state_DC": read_block_path(data, "state_DC"),
+        "lim_charge": read_block_path(data, "lim_charge"),
+        "lim_gen": read_block_path(data, "lim_gen"),
+    }
+
 
 ECOFLOW_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.ECOFLOW,
     name="EcoFlow PowerKit",
+    command_block=_command_block,
     sensors=(
         SensorSpec(path="dev_stat", key="dev_stat", name="Device status", entity_category="diagnostic"),
         SensorSpec(path="soc", key="soc", name="State of charge", device_class="battery", unit="%"),

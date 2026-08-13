@@ -20,7 +20,6 @@ Brightness mapping (D-17):
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from enum import IntEnum
@@ -50,6 +49,9 @@ from .connect.control import ConnectCommandMixin, set_dev_data_path
 from .connect.descriptors import LightSpec
 from .connect.entity import resolve_entity_category
 from .const import (
+    ACK_FAILURE_REASONS,
+    ACK_STATE_FAILED,
+    ACK_STATE_QUEUED,
     CONF_BRAIN_MAC,
     DOMAIN,
     TOPIC_CONTROL_DATA,
@@ -59,6 +61,7 @@ from .const import (
 from .coordinator import RevotionCoordinator
 from .models import (
     RevotionCapabilityMixin,
+    dump_wire_json,
     format_mac_for_display,
     format_timer_attributes,
     normalize_mac,
@@ -164,6 +167,8 @@ class RevotionAmbientLight(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
         self._optimistic_brightness: int | None = None
         self._optimistic_rgbw: tuple[int, int, int, int] | None = None
         self._optimistic_since: float | None = None
+        self._optimistic_sent_at: float | None = None
+        self._last_ack_seq: int | None = None
         if config_name:
             self._attr_name = config_name
         elif channel is not None:
@@ -221,15 +226,48 @@ class RevotionAmbientLight(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
         unconditionally would bounce the UI back while the echo is still in
         flight over LTE-M. Without a command lock/timeout (unlike switch.py)
         the safety net is age-based: a stale optimistic state expires after
-        OPTIMISTIC_MAX_AGE_S.
+        OPTIMISTIC_MAX_AGE_S. A CMD_ACK (Brain >= 2.3.3) accelerates the
+        failure path and extends the window for a sleeping node.
         """
         self._apply_color_mode()
+        self._consume_command_ack()
         if self._optimistic_confirmed() or self._optimistic_expired():
             self._optimistic_state = None
             self._optimistic_brightness = None
             self._optimistic_rgbw = None
             self._optimistic_since = None
+            self._optimistic_sent_at = None
         super()._handle_coordinator_update()
+
+    def _consume_command_ack(self) -> None:
+        """Apply a CMD_ACK to the age-based optimistic state (no lock here).
+
+        The Ambient light has no command lock/timeout machinery, so only two
+        ack states matter: ``failed`` drops the optimistic values immediately
+        (instead of letting them decay for up to OPTIMISTIC_MAX_AGE_S while
+        showing a state the node never took), and ``queued`` (node asleep)
+        pushes ``_optimistic_since`` into the future so the optimistic state
+        survives until the node's wake window. ``delivered`` needs no action --
+        the data echo confirms as before.
+        """
+        if self._optimistic_since is None or self._optimistic_sent_at is None:
+            return
+        ack = self.coordinator.get_command_ack(self._node_mac, self._cap_index)
+        if ack is None or ack.seq == self._last_ack_seq or ack.received_at < self._optimistic_sent_at:
+            return
+        self._last_ack_seq = ack.seq
+        if ack.state == ACK_STATE_FAILED:
+            reason = ACK_FAILURE_REASONS.get(ack.reason or 0, f"failure code {ack.reason}")
+            _LOGGER.warning("ACK FAILED %s: %s", self.entity_id or self.unique_id, reason)
+            self._optimistic_state = None
+            self._optimistic_brightness = None
+            self._optimistic_rgbw = None
+            self._optimistic_since = None
+            self._optimistic_sent_at = None
+        elif ack.state == ACK_STATE_QUEUED:
+            # A future timestamp extends the expiry window by the node's
+            # remaining sleep on top of OPTIMISTIC_MAX_AGE_S.
+            self._optimistic_since = time.monotonic() + (ack.time_s or 0)
 
     def _optimistic_expired(self) -> bool:
         """Return True when the optimistic state outlived its echo window."""
@@ -359,7 +397,11 @@ class RevotionAmbientLight(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
         """
         self.coordinator.assert_commands_allowed()
         topic = TOPIC_CONTROL_DATA.format(mac=self._brain_mac)
-        await self._mqtt_client.async_publish(topic, json.dumps(payload))
+        # Opt into the CMD_ACK lifecycle (Brain >= 2.3.3); older brains ignore
+        # unknown keys. HA sends discrete sets (not the app's high-rate color
+        # streaming), so the ack traffic stays negligible.
+        payload = {**payload, "ack": True}
+        await self._mqtt_client.async_publish(topic, dump_wire_json(payload))
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the light with optional brightness, RGBW color or kelvin.
@@ -406,6 +448,7 @@ class RevotionAmbientLight(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
         self._optimistic_rgbw = (payload["rval"], payload["gval"], payload["bval"], payload["wval"])
         self._optimistic_brightness = round(payload["bri"] * 255 / 100) if payload["bri"] else 0
         self._optimistic_since = time.monotonic()
+        self._optimistic_sent_at = self._optimistic_since
         if self.hass is not None:
             self.async_write_ha_state()
 
@@ -426,6 +469,7 @@ class RevotionAmbientLight(RevotionCapabilityMixin, CoordinatorEntity[RevotionCo
 
         self._optimistic_state = False
         self._optimistic_since = time.monotonic()
+        self._optimistic_sent_at = self._optimistic_since
         if self.hass is not None:
             self.async_write_ha_state()
 

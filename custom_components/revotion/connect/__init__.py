@@ -11,6 +11,7 @@ See Ha-Integration-Docs/connect-integration.md for the full concept.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ..const import CONNECT_DEVICE_LABELS, ConnectDevice
@@ -167,6 +168,27 @@ def is_path_available(capability: Capability, path: str | None) -> bool:
     if path is None:
         return True
     return read_dev_data_path(capability, path) not in _UNAVAILABLE_VALUES
+
+
+def config_gate_ok(capability: Capability, gate: Callable[[Mapping[str, Any]], bool] | None) -> bool:
+    """Return whether a spec's optional config-based creation gate passes.
+
+    ``gate`` (see ``descriptors.ConfigGate``) is evaluated against a merged
+    view of ``capability.config.data`` with ``dev_conf`` flattened on top --
+    the sync endpoint emits device identity flags either top-level or nested
+    under ``dev_conf`` (same dual shape as the lock's ``config_flag`` and the
+    Thitronik sensor-type list), so gates never need to know which shape
+    arrived. Values stay the raw sync strings (``"1"``, ``"2"``); gates
+    compare accordingly. ``None`` means no gate -> create.
+    """
+    if gate is None:
+        return True
+    config_data = capability.config.data
+    merged: dict[str, Any] = dict(config_data)
+    dev_conf = config_data.get("dev_conf")
+    if isinstance(dev_conf, dict):
+        merged.update(dev_conf)
+    return gate(merged)
 
 
 def control_lock_reason(capability: Capability, lock_path: str | None) -> str | None:

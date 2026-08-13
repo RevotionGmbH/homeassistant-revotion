@@ -33,6 +33,9 @@ it is always available.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
 from ..descriptors import (
     ClimateSpec,
@@ -41,6 +44,7 @@ from ..descriptors import (
     SelectSpec,
     SensorSpec,
     SwitchSpec,
+    read_block_path,
 )
 
 HVAC_OFF = "off"
@@ -55,9 +59,33 @@ MODE_AC = 3
 SEND_MODE_FAN_SPEED = 0
 SEND_MODE_TARGET_TEMP = 1
 
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app absorber-fridge ``toDataPayload`` parity.
+
+    The compressor-fridge block (including the ``send_mode`` split, see
+    ``dometic_fridge._command_block``) plus the absorber-only comfort toggles.
+    """
+    send_mode = read_block_path(data, "send_mode")
+    block: dict[str, Any] = {"state": read_block_path(data, "state")}
+    if send_mode == SEND_MODE_FAN_SPEED:
+        block["fan_speed"] = read_block_path(data, "fan_speed")
+    else:
+        block["target_temp"] = read_block_path(data, "target_temp")
+    block["send_mode"] = send_mode
+    block["mode"] = read_block_path(data, "mode")
+    block["fan_one"] = read_block_path(data, "fan_one")
+    block["fan_second"] = read_block_path(data, "fan_second")
+    block["frame_heater"] = read_block_path(data, "frame_heater")
+    block["ice_maker"] = read_block_path(data, "ice_maker")
+    block["buzzer"] = read_block_path(data, "buzzer")
+    return block
+
+
 ABSORBER_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.DOMETIC_FRIDGE_ABS,
     name="Dometic Fridge (Absorber)",
+    command_block=_command_block,
     sensors=(
         SensorSpec(path="dev_stat", key="dev_stat", name="Device status", entity_category="diagnostic"),
         SensorSpec(path="err.err_code", key="err_code", name="Error code", entity_category="diagnostic"),

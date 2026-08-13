@@ -19,13 +19,19 @@ from __future__ import annotations
 from .descriptors import ConnectDeviceDescriptor
 from .devices.airtronic3 import AIRTRONIC3_DESCRIPTOR
 from .devices.alde import ALDE_DESCRIPTOR
+from .devices.can_battery import CAN_BATTERY_DESCRIPTOR
 from .devices.dometic_absorber import ABSORBER_DESCRIPTOR
 from .devices.dometic_freshjet import FRESHJET_DESCRIPTOR
 from .devices.dometic_fridge import FRIDGE_DESCRIPTOR
 from .devices.ecoflow import ECOFLOW_DESCRIPTOR
+from .devices.phoenix_charger import PHOENIX_CHARGER_DESCRIPTOR
+from .devices.phoenix_inverter import PHOENIX_INVERTER_DESCRIPTOR
 from .devices.thitronik import THITRONIK_DESCRIPTOR
 from .devices.truma_combi import TRUMA_COMBI_DESCRIPTOR
 from .devices.truma_cpp import TRUMA_CPP_DESCRIPTOR
+from .devices.ve_direct_bmv import VE_DIRECT_BMV_DESCRIPTOR
+from .devices.ve_direct_mppt import VE_DIRECT_MPPT_DESCRIPTOR
+from .devices.ve_direct_orion_xs import VE_DIRECT_ORION_XS_DESCRIPTOR
 
 # device_code -> descriptor. Populated as each device category is implemented.
 DEVICE_REGISTRY: dict[int, ConnectDeviceDescriptor] = {
@@ -38,6 +44,13 @@ DEVICE_REGISTRY: dict[int, ConnectDeviceDescriptor] = {
     TRUMA_CPP_DESCRIPTOR.device: TRUMA_CPP_DESCRIPTOR,
     FRIDGE_DESCRIPTOR.device: FRIDGE_DESCRIPTOR,
     ABSORBER_DESCRIPTOR.device: ABSORBER_DESCRIPTOR,
+    # Phase 8: VE.Direct / CAN energy family (Brain >= 2.3.3).
+    VE_DIRECT_BMV_DESCRIPTOR.device: VE_DIRECT_BMV_DESCRIPTOR,
+    VE_DIRECT_MPPT_DESCRIPTOR.device: VE_DIRECT_MPPT_DESCRIPTOR,
+    VE_DIRECT_ORION_XS_DESCRIPTOR.device: VE_DIRECT_ORION_XS_DESCRIPTOR,
+    PHOENIX_CHARGER_DESCRIPTOR.device: PHOENIX_CHARGER_DESCRIPTOR,
+    PHOENIX_INVERTER_DESCRIPTOR.device: PHOENIX_INVERTER_DESCRIPTOR,
+    CAN_BATTERY_DESCRIPTOR.device: CAN_BATTERY_DESCRIPTOR,
 }
 
 

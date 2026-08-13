@@ -11,6 +11,7 @@ from collections.abc import Callable
 import aiomqtt
 
 from .const import (
+    TOPIC_ACK,
     TOPIC_CONFIG,
     TOPIC_DATA,
     TOPIC_ERROR,
@@ -133,7 +134,7 @@ class RevotionMqttClient:
 
     @property
     def _topics(self) -> list[str]:
-        """Return list of 6 MQTT topics to subscribe to."""
+        """Return list of 7 MQTT topics to subscribe to."""
         return [
             TOPIC_DATA.format(mac=self._brain_mac),
             TOPIC_CONFIG.format(mac=self._brain_mac),
@@ -141,6 +142,8 @@ class RevotionMqttClient:
             TOPIC_GPS.format(mac=self._brain_mac),
             TOPIC_ERROR.format(mac=self._brain_mac),
             TOPIC_PAIR.format(mac=self._brain_mac),
+            # Command ACKs (Brain >= 2.3.3); older brains never publish here.
+            TOPIC_ACK.format(mac=self._brain_mac),
         ]
 
     async def _connection_loop(self) -> None:

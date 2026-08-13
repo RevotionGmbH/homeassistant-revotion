@@ -34,8 +34,18 @@ left for a later diagnostics pass).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ...const import ConnectDevice
-from ..descriptors import ClimateSpec, ConnectDeviceDescriptor, ControlLockSpec, SensorSpec, SwitchSpec
+from ..descriptors import (
+    ClimateSpec,
+    ConnectDeviceDescriptor,
+    ControlLockSpec,
+    SensorSpec,
+    SwitchSpec,
+    read_block_path,
+)
 
 # HVACMode value strings (kept as plain strings; climate.py resolves to HVACMode
 # so this module needs no HA import, consistent with the other descriptors).
@@ -47,9 +57,25 @@ HVAC_FAN_ONLY = "fan_only"
 MODE_HEAT = 0
 MODE_VENTILATE = 1
 
+
+def _command_block(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Full writable control block, app ``NodeDataEbersbaecherModel.toDataPayload`` parity.
+
+    ``reset_err`` mirrors the received value exactly like the app model does.
+    """
+    return {
+        "mode": read_block_path(data, "mode"),
+        "state": read_block_path(data, "state"),
+        "eco": read_block_path(data, "eco"),
+        "target_temp": read_block_path(data, "target_temp"),
+        "reset_err": read_block_path(data, "reset_err"),
+    }
+
+
 AIRTRONIC3_DESCRIPTOR = ConnectDeviceDescriptor(
     device=ConnectDevice.AIRTRONIC3,
     name="Eberspächer Airtronic 3",
+    command_block=_command_block,
     sensors=(
         SensorSpec(
             path="dev_stat",

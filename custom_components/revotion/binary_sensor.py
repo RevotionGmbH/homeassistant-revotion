@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .connect import (
+    config_gate_ok,
     control_lock_reason,
     get_descriptor,
     has_descriptor,
@@ -136,7 +137,9 @@ async def async_setup_entry(
     # array length so sensors deleted in the app disappear here too.
     known_connect_keys: set[tuple[str, int, str]] = set()
     brain_norm = normalize_mac(brain_mac)
-    array_entities: dict[tuple[str, int, str], BinarySensorEntity] = {}
+    # Reconciled (presence-gated) entities: array elements AND plain specs
+    # carrying a config_gate share one dict + candidate list.
+    gated_entities: dict[tuple[str, int, str], BinarySensorEntity] = {}
 
     def _make_array_binary_sensor(node, capability, array_spec, index):
         """Bind a per-element factory (own scope avoids late-binding in the loop)."""
@@ -150,6 +153,22 @@ async def async_setup_entry(
                 cap_index=capability.capability_index,
                 spec=array_spec,
                 index=index,
+                config_name=capability.config.name,
+            )
+
+        return factory
+
+    def _make_binary_sensor(node, capability, spec):
+        """Bind a per-spec factory for a config-gated binary sensor."""
+
+        def factory() -> RevotionConnectBinarySensor:
+            register_node_device(hass, entry, node, brain_mac)
+            return RevotionConnectBinarySensor(
+                coordinator=coordinator,
+                brain_mac=brain_mac,
+                node_mac=node.mac_address,
+                cap_index=capability.capability_index,
+                spec=spec,
                 config_name=capability.config.name,
             )
 
@@ -191,6 +210,13 @@ async def async_setup_entry(
 
                 for spec in descriptor.binary_sensors:
                     key = (node_mac, capability.capability_index, spec.key)
+                    if spec.config_gate is not None:
+                        # Config-gated spec (MPPT load_on needs load_av): the
+                        # reconcile adds/removes it as the config resolves.
+                        present = config_gate_ok(capability, spec.config_gate)
+                        unique_id = f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}_{spec.key}"
+                        array_candidates.append((key, present, unique_id, _make_binary_sensor(node, capability, spec)))
+                        continue
                     if key in known_connect_keys:
                         continue
                     known_connect_keys.add(key)
@@ -256,7 +282,7 @@ async def async_setup_entry(
         reconcile_gated_entities(
             hass=hass,
             entity_domain="binary_sensor",
-            entities=array_entities,
+            entities=gated_entities,
             current_macs=current_macs,
             candidates=array_candidates,
             async_add_entities=async_add_entities,

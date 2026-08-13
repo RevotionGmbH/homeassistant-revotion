@@ -20,6 +20,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .connect import (
+    config_gate_ok,
     get_descriptor,
     has_descriptor,
     is_path_available,
@@ -216,7 +217,9 @@ async def async_setup_entry(
                 assert descriptor is not None
                 for spec in descriptor.selects:
                     key = (node_mac, capability.capability_index, spec.key)
-                    present = is_path_available(capability, spec.available_path)
+                    present = is_path_available(capability, spec.available_path) and config_gate_ok(
+                        capability, spec.config_gate
+                    )
                     unique_id = f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}_{spec.key}"
                     candidates.append(
                         (key, present, unique_id, _make_connect_select(node, capability, device_code, spec))

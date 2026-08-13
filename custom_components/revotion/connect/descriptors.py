@@ -35,7 +35,46 @@ current-channel pattern).
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import Any
+
+# A config-based creation gate: receives the merged capability config
+# (``capability.config.data`` with ``dev_conf`` flattened on top) and returns
+# whether the entity should exist. Used where the app gates a control on
+# *config* rather than dev_data availability flags (VE.Direct BMV relay:
+# ``relay_av == "1" and relay_mode == "2"``; MPPT load: ``load_av == "1"``).
+# Config values arrive as strings from /brain/sync -- gates must compare
+# accordingly. ``None`` means no gate (always create).
+type ConfigGate = Callable[[Mapping[str, Any]], bool]
+
+# A full-control-block builder: receives the device's *effective* ``dev_data``
+# (last received values, overlaid with any still-pending commanded fields and
+# the change being sent) and returns the complete writable control block --
+# the exact shape the app's ``toDataPayload()`` serializes for this device.
+# The firmware decodes ``ctr_data`` into a full struct and forwards it to the
+# node 1:1, so any writable field *missing* from the payload arrives as zero
+# on the node (a light toggle would silently reset target temp, fan mode,
+# sleep mode, ...). Devices whose app payload is a single field (VE.Direct
+# relay/load/mode, Phoenix) or a command code (Thitronik) need no builder.
+type CommandBlockBuilder = Callable[[Mapping[str, Any]], dict[str, Any]]
+
+
+def read_block_path(data: Mapping[str, Any], path: str, default: Any = 0) -> Any:
+    """Read a dotted path from a plain ``dev_data`` mapping for a command block.
+
+    Mirrors ``read_dev_data_path`` but operates on a bare mapping (the merged
+    view a :data:`CommandBlockBuilder` receives) and substitutes ``default``
+    for missing leaves. The default of ``0`` matches what the firmware's
+    zero-filled decode would send anyway when a field is absent -- it can only
+    surface before the device has reported any data at all.
+    """
+    node: Any = data
+    for segment in path.split("."):
+        if not isinstance(node, Mapping):
+            return default
+        node = node.get(segment)
+    return default if node is None else node
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -52,6 +91,17 @@ class SensorSpec:
         unit: Optional native unit of measurement.
         entity_category: Optional HA ``EntityCategory`` value (``"diagnostic"``
             / ``"config"``) for diagnostic fields like ``dev_stat``.
+        state_class: Optional HA ``SensorStateClass`` value (``"measurement"``
+            / ``"total_increasing"``); lifetime energy counters (VE.Direct
+            ``chg_kwh``) need ``total_increasing`` for the HA energy dashboard.
+        available_path: Optional ``dev_data`` 0/1 flag gating this sensor's
+            *presence* (CAN battery ``soh_av``/``limits_av``/... rows the app
+            hides entirely). Presence-gated like Connect switches: the
+            discovery listener creates the entity when the flag is truthy and
+            removes it (live + registry row) when it is falsy. ``None`` means
+            always present.
+        config_gate: Optional config-based creation gate (see :data:`ConfigGate`;
+            BMV aux_typ selecting temp vs. aux-voltage vs. mid-point rows).
     """
 
     path: str
@@ -60,6 +110,9 @@ class SensorSpec:
     device_class: str | None = None
     unit: str | None = None
     entity_category: str | None = None
+    state_class: str | None = None
+    available_path: str | None = None
+    config_gate: ConfigGate | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -119,13 +172,18 @@ class EnumSensorSpec:
     entity_category: str | None = None
 
     def options(self) -> tuple[str, ...]:
-        """Return every option this sensor can report (for ``_attr_options``)."""
+        """Return every option this sensor can report (for ``_attr_options``).
+
+        Deduplicated preserving first occurrence: several wire codes may fold
+        into one option (VE.Direct ``MODE`` 0/4 -> ``off``, 1/2/3 -> ``on``),
+        and HA rejects duplicate entries in ``_attr_options``.
+        """
         opts = [option for _, option in self.value_map]
         if self.sensor_range is not None:
             low, high = self.sensor_range
             opts += [f"{self.sensor_option_prefix}_{code}" for code in range(low, high + 1)]
         opts.append(self.unknown_option)
-        return tuple(opts)
+        return tuple(dict.fromkeys(opts))
 
     def option_for(self, code: int) -> str:
         """Map a wire code to its option string (see class docstring order)."""
@@ -153,6 +211,9 @@ class BinarySensorSpec:
         name: Fallback display name.
         device_class: Optional HA ``BinarySensorDeviceClass`` value.
         entity_category: Optional HA ``EntityCategory`` value.
+        config_gate: Optional config-based creation gate (see :data:`ConfigGate`;
+            MPPT ``load_on`` only exists on chargers with a load output,
+            ``load_av == "1"`` in the app config).
     """
 
     path: str
@@ -160,6 +221,7 @@ class BinarySensorSpec:
     name: str
     device_class: str | None = None
     entity_category: str | None = None
+    config_gate: ConfigGate | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -465,6 +527,8 @@ class SwitchSpec:
     device_class: str | None = None
     entity_category: str | None = None
     available_path: str | None = None
+    # Optional config-based creation gate (BMV relay: relay_av + relay_mode).
+    config_gate: ConfigGate | None = None
     # Optional dev_stat path locking control on 6/7; see ClimateSpec.lock_path.
     lock_path: str | None = None
     extra_command_fields: dict[str, int] = field(default_factory=dict)
@@ -617,6 +681,8 @@ class SelectSpec:
     option_to_value: dict[str, int]
     entity_category: str | None = None
     available_path: str | None = None
+    # Optional config-based creation gate (MPPT load_mode: load_av == "1").
+    config_gate: ConfigGate | None = None
     option_av_flags: dict[str, str] = field(default_factory=dict)
     # Optional dev_stat path locking control on 6/7; see ClimateSpec.lock_path.
     lock_path: str | None = None
@@ -730,3 +796,7 @@ class ConnectDeviceDescriptor:
     array_sensors: tuple[ArraySensorSpec, ...] = ()
     control_lock_path: str | None = None
     control_locks: tuple[ControlLockSpec, ...] = ()
+    # Builds the complete writable control block (app toDataPayload parity)
+    # for every ctr_data command; None -> commands publish only the changed
+    # fields (single-field / command-code devices). See CommandBlockBuilder.
+    command_block: CommandBlockBuilder | None = None

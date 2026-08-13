@@ -36,7 +36,6 @@ not only for this entity's echo.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any
@@ -45,6 +44,7 @@ from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.helpers.event import async_call_later
 
 from ..const import COMMAND_TIMEOUT_MESSAGE, DOMAIN, TOPIC_CONTROL_DATA
+from ..models import deep_merge_dev_data, dump_wire_json, process_command_ack
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ class ConnectCommandMixin:
         self._command_sent_at: float | None = None
         self._command_pending: bool = False
         self._timeout_cancel: CALLBACK_TYPE | None = None
+        self._last_ack_seq: int | None = None
 
     # --- optimistic-state lifecycle -------------------------------------------
 
@@ -187,7 +188,12 @@ class ConnectCommandMixin:
         real echo is still in flight over LTE-M -- the UI would bounce back to
         the stale value. Instead the state is kept until the data actually
         matches (or the 60 s timeout reverts it).
+
+        A CMD_ACK (Brain >= 2.3.3) accelerates this: queued extends the
+        timeout for a sleeping node, delivered releases the lock early, failed
+        reverts immediately (see ``models.process_command_ack``).
         """
+        process_command_ack(self, revert=self._revert_optimistic, timeout_cb=self._on_command_timeout)
         if self._optimistic_confirmed():
             self._clear_command_lock()
             self._revert_optimistic()
@@ -287,9 +293,17 @@ class ConnectCommandMixin:
                 translation_placeholders={"entity": entity_name},
             )
 
+        fragment = dev_data
+        block_builder = self._command_block_builder()
+        if block_builder is not None:
+            dev_data = self._expand_command_block(block_builder, fragment)
+
         payload = self._build_base_payload()  # type: ignore[attr-defined]
         payload["device"] = self._device_code
         payload["dev_data"] = dev_data
+        # Opt into the CMD_ACK lifecycle (Brain >= 2.3.3); older brains ignore
+        # unknown keys.
+        payload["ack"] = True
 
         topic = TOPIC_CONTROL_DATA.format(mac=self._brain_mac)
         self._command_sent_at = time.monotonic()
@@ -308,12 +322,55 @@ class ConnectCommandMixin:
             payload,
         )
         try:
-            await self._mqtt_client.async_publish(topic, json.dumps(payload))  # type: ignore[attr-defined]
+            await self._mqtt_client.async_publish(topic, dump_wire_json(payload))  # type: ignore[attr-defined]
         except Exception:
             self._command_pending = False
             self._command_sent_at = None
             self._cancel_command_timeout()
             raise
+        if block_builder is not None:
+            # Remember the commanded fields until their echo confirms, so a
+            # sibling entity's full-block rebuild inside the round-trip window
+            # carries this change instead of the stale received value.
+            self.coordinator.note_command_fragment(self._node_mac, self._cap_index, fragment)  # type: ignore[attr-defined]
+
+    def _command_block_builder(self) -> Any:
+        """Return this device's full-control-block builder, or ``None``.
+
+        Imported locally to avoid the ``connect`` -> ``connect.control``
+        package import cycle (mirrors :meth:`_resolve_lock_path`).
+        """
+        from . import get_descriptor
+
+        descriptor = get_descriptor(self._device_code)
+        return descriptor.command_block if descriptor is not None else None
+
+    def _expand_command_block(self, block_builder: Any, fragment: dict[str, Any]) -> dict[str, Any]:
+        """Expand a changed-fields fragment into the complete control block.
+
+        The firmware decodes ``dev_data`` into a full struct and forwards it to
+        the node 1:1 -- writable fields missing from the payload arrive as
+        *zero* on the node. The app never has this problem because it always
+        serializes its complete model (``copyWith(change)`` ->
+        ``toDataPayload()``); this reproduces that flow:
+
+        1. effective state = last received ``dev_data``, overlaid with any
+           still-pending commanded fields (coordinator overlay), overlaid with
+           this command's fragment (what ``copyWith`` does in the app),
+        2. the device's ``command_block`` builder serializes the complete
+           writable block from that state (``toDataPayload`` parity, including
+           conditional fields like the fridge ``send_mode`` split),
+        3. the fragment is merged on top once more as a guard so the
+           explicitly commanded values always reach the wire.
+        """
+        cap = self._find_capability()  # type: ignore[attr-defined]
+        current = cap.data.get("dev_data") if cap is not None else None
+        effective: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+        overlay = self.coordinator.get_command_overlay(self._node_mac, self._cap_index)  # type: ignore[attr-defined]
+        if overlay:
+            effective = deep_merge_dev_data(effective, overlay)
+        effective = deep_merge_dev_data(effective, fragment)
+        return deep_merge_dev_data(block_builder(effective), fragment)
 
 
 def connect_command_dev_data(command: int) -> dict[str, Any]:

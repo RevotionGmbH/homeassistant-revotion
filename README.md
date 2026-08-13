@@ -10,6 +10,8 @@ A custom Home Assistant integration for [Revotion](https://revotion.de) digital 
 - **Real-time data** via MQTT push (REST polling as fallback)
 - **Multi-Brain support** -- add multiple Brains (camper + boat)
 - **Multi-channel capabilities** -- Multiwhite & Multiswitch nodes expose one entity per channel
+- **Connect devices** -- heaters (Truma Combi / CP plus, Alde, Eberspächer Airtronic), Dometic air conditioners and fridges, EcoFlow power stations, Thitronik alarm systems and the Victron energy family (BMV / SmartShunt, MPPT, Orion XS, Phoenix charger & inverter, CAN batteries) as native climate, switch, select, number, light, lock and alarm entities
+- **Reliable commands** -- optimistic UI with real command acknowledgements from the Brain (firmware 2.3.3+): failures roll back and notify immediately
 - **GPS tracking** -- camper/boat location on the HA map
 - **Dynamic discovery** -- new nodes appear automatically when paired
 - **German translations** included
@@ -18,7 +20,7 @@ A custom Home Assistant integration for [Revotion](https://revotion.de) digital 
 ## Requirements
 
 - Home Assistant 2025.2.0 or newer
-- Revotion Brain with WiFi connection (Brain version 2.3.2 or newer)
+- Revotion Brain with WiFi connection (Brain version 2.3.2 or newer; some features -- Victron energy devices, total current, command acknowledgements, FreshJet input-current limit -- require 2.3.3)
 - Revotion Flutter App (to generate the access token)
 
 ## Installation
@@ -65,6 +67,7 @@ The integration automatically validates your token and sets up all discovered de
 | Ambient Light | `light` | LightEntity | RGBW light with brightness and color control |
 | Multiwhite | `light` | LightEntity | Multi-channel light — one RGBW/brightness entity per channel |
 | Multiswitch | `switch` | SwitchEntity | Multi-channel relay — one on/off entity per channel |
+| Connect | `climate`, `switch`, `select`, `number`, `light`, `sensor`, `binary_sensor`, `lock`, `alarm_control_panel`, `button` | per device | Third-party devices behind a Connect node — heaters, AC, fridges, power stations, alarm systems, Victron energy devices; entities match the device type |
 | Brain Online | `binary_sensor` | BinarySensorEntity | Brain connectivity status |
 | GPS Position | `device_tracker` | TrackerEntity | Camper/boat location on map |
 
