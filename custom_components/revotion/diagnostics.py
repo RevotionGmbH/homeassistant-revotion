@@ -98,6 +98,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: Revotio
             "message_count": mqtt.message_count,
             "reconnect_count": mqtt.reconnect_count,
             "stale_reconnect_count": mqtt.stale_reconnect_count,
+            "watchdog_probe_count": mqtt.probe_count,
             "seconds_since_last_message": mqtt.seconds_since_last_message,
         },
         "rest_polling": {

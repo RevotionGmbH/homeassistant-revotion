@@ -30,6 +30,7 @@ from .const import (
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.device_registry import DeviceEntry, DeviceRegistry
 
     from .const import RevotionConfigEntry
 
@@ -342,6 +343,19 @@ def format_timer_attributes(timer: dict[str, Any] | None) -> dict[str, Any]:
     return attrs
 
 
+def get_entry_device(registry: DeviceRegistry, config_entry_id: str, identifier: tuple[str, str]) -> DeviceEntry | None:
+    """Look up a device of this config entry by one of its identifiers.
+
+    HA 2026.9 made identifiers unique only within a config entry and deprecated
+    the global ``async_get_device(identifiers=...)`` (breaks in 2027.8) in favour
+    of the entry-scoped ``async_get_device_by_identifier``. Older cores (min HA
+    2025.2) only have the global lookup.
+    """
+    if hasattr(registry, "async_get_device_by_identifier"):
+        return registry.async_get_device_by_identifier(identifier, config_entry_id)
+    return registry.async_get_device(identifiers={identifier})
+
+
 def register_node_device(
     hass: HomeAssistant,
     entry: RevotionConfigEntry,
@@ -356,6 +370,10 @@ def register_node_device(
     3. Final fallback: "Node {node_number}"
 
     Idempotent -- dr.async_get_or_create is safe to call multiple times.
+
+    The Brain link is set via ``async_update_device(via_device_id=...)``: the
+    ``via_device`` tuple of ``async_get_or_create`` is deprecated since HA
+    2026.9, and its ``via_device_id`` replacement does not exist on min HA 2025.2.
     """
     from homeassistant.helpers import device_registry as dr
 
@@ -363,7 +381,7 @@ def register_node_device(
     brain_mac_normalized = normalize_mac(brain_mac)
     registry = dr.async_get(hass)
 
-    registry.async_get_or_create(
+    device = registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, node_mac)},
         manufacturer=MANUFACTURER,
@@ -371,11 +389,13 @@ def register_node_device(
         name=get_node_device_name(node),
         sw_version=node.firmware_version,
         hw_version=node.hardware_revision or None,
-        via_device=(DOMAIN, brain_mac_normalized),
     )
+    brain_device = get_entry_device(registry, entry.entry_id, (DOMAIN, brain_mac_normalized))
+    if brain_device is not None and device.via_device_id != brain_device.id:
+        registry.async_update_device(device.id, via_device_id=brain_device.id)
 
 
-def sync_connect_device_names(hass: HomeAssistant, brain: Brain) -> None:
+def sync_connect_device_names(hass: HomeAssistant, entry: RevotionConfigEntry, brain: Brain) -> None:
     """Keep Connect node device names in sync with their live app config name.
 
     has_entity_name model: a Connect node's *device* carries the name and its
@@ -394,7 +414,7 @@ def sync_connect_device_names(hass: HomeAssistant, brain: Brain) -> None:
     for node in brain.nodes:
         if not any(cap.capability_type == CapabilityType.CONNECT for cap in node.capabilities):
             continue
-        device = registry.async_get_device(identifiers={(DOMAIN, normalize_mac(node.mac_address))})
+        device = get_entry_device(registry, entry.entry_id, (DOMAIN, normalize_mac(node.mac_address)))
         if device is None:
             continue
         desired = get_node_device_name(node)

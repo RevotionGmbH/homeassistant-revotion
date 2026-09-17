@@ -1,8 +1,8 @@
 """DataUpdateCoordinator for the Revotion integration.
 
 Implements a push/poll hybrid pattern: MQTT messages are the primary data
-channel (via async_set_updated_data), REST polling at 60s acts as fallback
-when MQTT is disconnected. Manages Brain online/offline state and performs
+channel (via async_set_updated_data), REST polling every 5 min acts as a
+safety net while MQTT is silent. Manages Brain online/offline state and performs
 one-time REST sync on MQTT reconnect or Brain coming online.
 """
 
@@ -19,9 +19,10 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api_client import RevotionApiClient, RevotionAuthError, RevotionConnectionError
+from .api_client import RevotionApiClient, RevotionApiError, RevotionAuthError, RevotionConnectionError
 from .const import (
     ACK_STATE_FAILED,
     CONF_BRAIN_MAC,
@@ -46,13 +47,17 @@ from .mqtt_client import RevotionMqttClient
 _LOGGER = logging.getLogger(__name__)
 
 MAX_ERROR_HISTORY = 50
+# Minimum spacing of event-driven REST syncs (MQTT reconnect, Brain online).
+# A burst of triggers runs one sync immediately and at most one trailing sync
+# after the cooldown, so nothing is missed but REST is never hammered.
+REST_SYNC_COOLDOWN_S = 30
 
 
 class RevotionCoordinator(DataUpdateCoordinator[Brain]):
     """Coordinator for Revotion Brain data.
 
     Central data hub that receives MQTT push messages (primary), falls back
-    to REST polling (60s), and notifies all entity listeners when data changes.
+    to REST polling (5 min), and notifies all entity listeners when data changes.
     Also manages Brain online/offline state and performs REST sync on reconnect.
     """
 
@@ -106,6 +111,18 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
         # echo confirms every fragment leaf, on a failed CMD_ACK, or after the
         # command-timeout window.
         self._command_overlays: dict[tuple[str, int], tuple[dict[str, Any], float]] = {}
+        self._rest_sync_debouncer: Debouncer = Debouncer(
+            hass,
+            _LOGGER,
+            cooldown=REST_SYNC_COOLDOWN_S,
+            immediate=True,
+            function=self._async_debounced_rest_sync,
+        )
+
+    async def async_shutdown(self) -> None:
+        """Cancel scheduled refreshes, including a pending trailing REST sync."""
+        await super().async_shutdown()
+        self._rest_sync_debouncer.async_shutdown()
 
     def get_command_ack(self, node_mac: str, cap_index: int) -> CommandAck | None:
         """Return the latest CMD_ACK for a (node, capability), or ``None``."""
@@ -271,19 +288,29 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
                 "REST sync completed for Brain %s after reconnect",
                 self._brain_mac,
             )
-        except RevotionConnectionError as err:
-            self.record_error("rest_sync_error", str(err))
-            _LOGGER.warning(
-                "REST sync after reconnect failed for Brain %s: %s",
-                self._brain_mac,
-                err,
-            )
         except RevotionAuthError:
             self.record_error("auth_error", f"Auth failed during REST sync for Brain {self._brain_mac}")
             _LOGGER.error(
                 "Auth failed during REST sync for Brain %s",
                 self._brain_mac,
             )
+        except RevotionApiError as err:
+            # Connection/5xx/429 and 403/404 alike: best-effort, the next
+            # sync or poll recovers -- never an unretrieved task exception.
+            self.record_error("rest_sync_error", str(err))
+            _LOGGER.warning(
+                "REST sync after reconnect failed for Brain %s: %s",
+                self._brain_mac,
+                err,
+            )
+
+    async def async_request_rest_sync(self) -> None:
+        """Request an event-driven REST sync, rate-limited by REST_SYNC_COOLDOWN_S."""
+        await self._rest_sync_debouncer.async_call()
+
+    async def _async_debounced_rest_sync(self) -> None:
+        """Debouncer target; resolves async_sync_from_rest at call time."""
+        await self.async_sync_from_rest()
 
     async def async_on_mqtt_connected(self) -> None:
         """Handle MQTT reconnection event (D-02).
@@ -295,7 +322,7 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
             "MQTT reconnected for Brain %s, REST sync triggered",
             self._brain_mac,
         )
-        await self.async_sync_from_rest()
+        await self.async_request_rest_sync()
 
     async def _resync_config_from_mqtt(self) -> None:
         """Debounced authoritative config re-pull after an MQTT /config event.
@@ -389,7 +416,7 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
             pruned,
         )
 
-    def handle_mqtt_message(self, topic: str, payload: bytes) -> None:
+    def handle_mqtt_message(self, topic: str, payload: bytes, retained: bool = False) -> None:
         """Process incoming MQTT message and update Brain tree.
 
         Routes messages by topic suffix (data, status, config, gps, error, pair).
@@ -399,6 +426,8 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
         Args:
             topic: Full MQTT topic string (e.g. "aabbccddeeff/data").
             payload: Raw message payload bytes.
+            retained: True if the broker re-sent a retained message because of
+                a (re)subscribe rather than forwarding a live publish.
 
         """
         try:
@@ -413,7 +442,7 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
             case "data":
                 self._handle_data_payload(data)
             case "status":
-                self._handle_status_payload(data)
+                self._handle_status_payload(data, retained=retained)
             case "config":
                 # Optimistic in-memory update for instant feedback, then pull the
                 # full, authoritative config over REST -- same principle as the
@@ -548,7 +577,10 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
         """
         device_mac = data.get("MAC", data.get("mac", "unknown"))
         self.record_error("mqtt_device_error", f"Device {device_mac}: {data}")
-        _LOGGER.warning("Error from device %s: %s", device_mac, data)
+        # Every change of a device's error list is pushed, recoveries included
+        # (e.g. "User": []), so the payload itself is routine; the reachability
+        # transition below is what matters and is logged at INFO.
+        _LOGGER.debug("Error list update from device %s: %s", device_mac, data)
 
         node = find_node(self.data, normalize_mac(str(device_mac)))
         if node is None:
@@ -593,16 +625,23 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
         for node in brain.nodes:
             node.reachable = reachable_by_mac.get(normalize_mac(node.mac_address), True)
 
-    def _handle_status_payload(self, data: dict[str, Any]) -> None:
+    def _handle_status_payload(self, data: dict[str, Any], retained: bool = False) -> None:
         """Update Brain online/offline state from MQTT status payload.
 
         Per D-13: When Brain comes online (isOnline=1), schedules REST sync
-        to refresh current state before MQTT data resumes.
+        to refresh current state before MQTT data resumes. The Brain publishes
+        /status retained, so the broker re-sends it on every (re)subscribe --
+        each MQTT reconnect and each receive-watchdog probe. Such a retained
+        re-delivery only triggers a sync when it reveals an offline->online
+        transition; a reconnect already syncs on its own. A live publish always
+        syncs: the firmware sends no data burst after its own (re)connect.
 
         Args:
             data: Parsed JSON payload with isOnline field.
+            retained: True for a broker re-delivery of the retained message.
 
         """
+        was_online = self.data.is_online
         is_online = bool(data.get("isOnline", 0))
         self.data.is_online = is_online
 
@@ -617,9 +656,11 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
                     intf,
                 )
 
-        if is_online:
+        if retained and is_online == was_online:
+            _LOGGER.debug("Retained status re-delivered for Brain %s (online=%s)", self._brain_mac, is_online)
+        elif is_online:
             _LOGGER.info("Brain %s back online", self._brain_mac)
-            self.hass.async_create_task(self.async_sync_from_rest())
+            self.hass.async_create_task(self.async_request_rest_sync())
         else:
             _LOGGER.info("Brain %s reported offline", self._brain_mac)
 

@@ -68,9 +68,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: RevotionConfigEntry) -> 
     # 3. Create MQTT client with deferred coordinator wiring
     coordinator: RevotionCoordinator | None = None
 
-    def _on_mqtt_message(topic: str, payload: bytes) -> None:
+    def _on_mqtt_message(topic: str, payload: bytes, retained: bool) -> None:
         if coordinator is not None:
-            coordinator.handle_mqtt_message(topic, payload)
+            coordinator.handle_mqtt_message(topic, payload, retained=retained)
 
     def _on_mqtt_connected() -> None:
         _LOGGER.info("MQTT connected to %s for Brain %s", MQTT_HOST, brain_mac)
@@ -121,7 +121,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: RevotionConfigEntry) -> 
     # coordinator update -- e.g. the debounced REST re-pull after a /config event.
     def _sync_connect_device_names() -> None:
         if coordinator.data is not None:
-            sync_connect_device_names(hass, coordinator.data)
+            sync_connect_device_names(hass, entry, coordinator.data)
 
     _sync_connect_device_names()  # initial pass once platforms have registered devices
     entry.async_on_unload(coordinator.async_add_listener(_sync_connect_device_names))

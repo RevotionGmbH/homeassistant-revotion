@@ -4,6 +4,18 @@ All notable changes to the Revotion Home Assistant integration are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/); the version
 is the release tag and matches `manifest.json` (pre-releases use PEP 440 style, e.g. `0.4.0b1`).
 
+## 0.5.1 — 2026-09-17
+
+### Fixed
+- The MQTT connection is no longer rebuilt every 10–60 minutes while a Brain is quiet. A Brain only sends updates when values change, so a parked vehicle can legitimately stay silent for hours — previously this was mistaken for a broken connection, causing dozens of reconnects per day, each followed by a full data reload from the Revotion cloud and a warning in the log. The integration now verifies a quiet connection without disconnecting and only reconnects when it is really broken
+- Fewer requests to the Revotion cloud: a reconnect now triggers a single data reload instead of two, and reloads triggered in quick succession are combined
+- A rate-limited or otherwise rejected request to the Revotion cloud (e.g. HTTP 429) is now handled like a temporary connection problem instead of producing an unhandled error in the log
+- Compatibility with Home Assistant 2026.9: removes the deprecation warnings about device registry calls that would stop working with Home Assistant 2027.8
+
+### Changed
+- Node error-list updates (e.g. a node that is briefly unreachable) are no longer logged as warnings; changes in a node's reachability are still logged at info level
+- Diagnostics include the number of connection checks performed while a Brain was quiet
+
 ## 0.5.0 — 2026-08-13
 
 First stable release — same code as pre-release 0.5.0b0, wrapping up the

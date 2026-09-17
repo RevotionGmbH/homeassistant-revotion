@@ -27,7 +27,7 @@ class RevotionSubscriptionError(RevotionApiError):
 
 
 class RevotionConnectionError(RevotionApiError):
-    """Connection error (timeout, DNS failure, HTTP 5xx)."""
+    """Connection error (timeout, DNS failure, HTTP 5xx, 429, other HTTP errors)."""
 
 
 class RevotionNotFoundError(RevotionApiError):
@@ -84,7 +84,8 @@ class RevotionApiClient:
             RevotionAuthError: On HTTP 401 (invalid/expired token).
             RevotionSubscriptionError: On HTTP 403 (premium required).
             RevotionNotFoundError: On HTTP 404 (brain not found).
-            RevotionConnectionError: On HTTP 5xx, timeout, or network error.
+            RevotionConnectionError: On HTTP 5xx, 429 (rate limit), any other
+                HTTP error status, timeout, or network error.
 
         """
         url = f"{self._base_url}{path}"
@@ -100,10 +101,16 @@ class RevotionApiClient:
             raise RevotionSubscriptionError("Premium subscription required")
         if response.status == 404:
             raise RevotionNotFoundError(f"Brain not found: {self._brain_mac}")
+        if response.status == 429:
+            # Per-brain budget shared with the app; transient like a 5xx. Must
+            # not escape as a raw aiohttp ClientResponseError (unhandled in the
+            # reconnect sync task).
+            raise RevotionConnectionError("Rate limited by Revotion API (HTTP 429)")
         if response.status >= 500:
             raise RevotionConnectionError(f"Server error: {response.status}")
+        if response.status >= 400:
+            raise RevotionConnectionError(f"Unexpected HTTP status: {response.status}")
 
-        response.raise_for_status()
         return await response.json()
 
     async def async_get_brain_status(self, mac: str) -> Brain:
