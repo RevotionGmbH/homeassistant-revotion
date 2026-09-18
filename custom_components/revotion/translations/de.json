@@ -8,7 +8,7 @@
           "json_config": "Konfigurations-JSON"
         },
         "data_description": {
-          "json_config": "Öffne die Revotion App, gehe zu Einstellungen > Konfiguration teilen und füge den kopierten JSON hier ein."
+          "json_config": "Öffne in der Revotion App System > REMOTE > Fernzugriff teilen, kopiere den Inhalt des QR-Codes und füge das JSON hier ein."
         }
       },
       "confirm": {
@@ -22,7 +22,7 @@
           "json_config": "Konfigurations-JSON"
         },
         "data_description": {
-          "json_config": "Öffne die Revotion App, gehe zu Einstellungen > Konfiguration teilen und füge den kopierten JSON hier ein."
+          "json_config": "Öffne in der Revotion App System > REMOTE > Fernzugriff teilen, kopiere den Inhalt des QR-Codes und füge das JSON hier ein."
         }
       }
     },

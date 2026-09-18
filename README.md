@@ -44,13 +44,14 @@ Or manually:
 
 ## Configuration
 
-1. In the Revotion App, go to **Settings > Share Configuration** -- a QR code is displayed
-2. Scan the QR code with a QR scanner app that shows its content as text, and copy the text
+1. In the Revotion App, open the **System** section and tap **REMOTE**
+2. Under **Share remote access** your QR code is displayed -- tap it to enlarge it
+3. Scan the QR code with a QR scanner app that shows its content as text, and copy the text
    - *This workaround is only needed until the next app update, which adds a button to copy the configuration directly.*
-3. In Home Assistant, go to **Settings > Devices & Services > Add Integration**
-4. Search for **Revotion** and select it
-5. Paste the copied JSON into the text field
-6. Confirm the detected Brain name and MAC address
+4. In Home Assistant, go to **Settings > Devices & Services > Add Integration**
+5. Search for **Revotion** and select it
+6. Paste the copied JSON into the text field
+7. Confirm the detected Brain name and MAC address
 
 The integration automatically validates your token and sets up all discovered devices.
 
@@ -106,7 +107,7 @@ When you unpair a Node, its entities are marked as **unavailable** (not deleted)
 
 Revotion tokens are valid for 180 days. When your token is about to expire (< 14 days remaining), Home Assistant shows a persistent notification. Once the token has expired, Home Assistant automatically asks for re-authentication:
 
-1. Open the Revotion App > Settings > Share Configuration
+1. Open the Revotion App > **System** > **REMOTE** > **Share remote access**
 2. Copy the configuration JSON (see [Configuration](#configuration) for the QR code workaround)
 3. Paste it into the re-authentication dialog in Home Assistant
 

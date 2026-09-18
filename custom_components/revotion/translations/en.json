@@ -8,7 +8,7 @@
           "json_config": "Configuration JSON"
         },
         "data_description": {
-          "json_config": "Open the Revotion App, go to Settings > Share Configuration, and paste the copied JSON here."
+          "json_config": "In the Revotion App, go to System > REMOTE > Share remote access, copy the content of the QR code and paste the JSON here."
         }
       },
       "confirm": {
@@ -22,7 +22,7 @@
           "json_config": "Configuration JSON"
         },
         "data_description": {
-          "json_config": "Open the Revotion App, go to Settings > Share Configuration, and paste the copied JSON here."
+          "json_config": "In the Revotion App, go to System > REMOTE > Share remote access, copy the content of the QR code and paste the JSON here."
         }
       }
     },
