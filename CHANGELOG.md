@@ -4,6 +4,18 @@ All notable changes to the Revotion Home Assistant integration are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/); the version
 is the release tag and matches `manifest.json` (pre-releases use PEP 440 style, e.g. `0.4.0b1`).
 
+## 0.5.2 — 2026-10-14
+
+### Fixed
+- The GPS position no longer jumps back to an old location after Home Assistant restarts or the connection to the Revotion cloud is re-established. Since Brain firmware 2.4.0 the cloud may still hold a stale position from before the firmware update; it is now ignored as soon as the current position is known
+- Compatibility with Home Assistant 2026.11: climate entities (Truma, Alde, Dometic FreshJet, Eberspächer Airtronic) use the new temperature property names, avoiding the deprecation warnings that would turn into errors with Home Assistant 2027.11 — older Home Assistant versions keep working
+- Connect devices no longer produce "does not generate unique IDs" errors in the log when a data update briefly lacks one of their values
+- A node that is unpaired and paired again now gets its entities back immediately instead of only after a restart
+- A command refused by the Brain because an automation rule currently controls that output (Brain firmware 2.4.0) is now reported as "blocked by an automation rule" instead of an unexplained failure code
+
+### Changed
+- Setup instructions point to the current place of the configuration code in the Revotion app: System > REMOTE > Share remote access
+
 ## 0.5.1 — 2026-09-17
 
 ### Fixed

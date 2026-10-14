@@ -26,6 +26,7 @@ from .connect.descriptors import ArrayBinarySensorSpec, BinarySensorSpec, Contro
 from .connect.entity import resolve_binary_sensor_device_class, resolve_entity_category
 from .const import CONF_BRAIN_MAC, DOMAIN, CapabilityType, RevotionConfigEntry
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import RevotionCapabilityMixin, find_node, normalize_mac, register_node_device
 from .mqtt_client import RevotionMqttClient
 
@@ -69,7 +70,12 @@ async def async_setup_entry(
     coordinator = entry.runtime_data.coordinator
     mqtt_client = entry.runtime_data.mqtt_client
     brain_mac = entry.data[CONF_BRAIN_MAC]
+    # Nodes already evaluated *while present*. A node that leaves
+    # coordinator.data is dropped from the set, so its return (re-pair, or an
+    # optimistic unpair drop the backend never confirmed) is evaluated again --
+    # native_entities then adds only what HA no longer has (see discovery.py).
     known_node_macs: set[str] = set()
+    native_entities = EntityTracker(hass, entry)
 
     # Brain-level entities (always created)
     async_add_entities(
@@ -94,6 +100,7 @@ async def async_setup_entry(
         if coordinator.data is None:
             return
         current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
+        known_node_macs.intersection_update(current_macs)
         new_macs = current_macs - known_node_macs
         if not new_macs:
             return
@@ -125,21 +132,19 @@ async def async_setup_entry(
                         )
                     )
 
-        if entities:
-            async_add_entities(entities)
+        if new_entities := native_entities.claim(entities):
+            async_add_entities(new_entities)
 
     # Connect (Type 12) deferred discovery: only devices with a tailored
     # descriptor produce binary_sensors here (generic devices mirror everything
     # through sensor.py). Track at (node_mac, cap_index, key) granularity so
     # entities appearing in later messages are picked up exactly once and a
     # re-paired node recreates its entities. Fixed sensors (spec.key) stay
-    # additive; array elements ("{key_prefix}_{n}") are *reconciled* against the
-    # array length so sensors deleted in the app disappear here too.
-    known_connect_keys: set[tuple[str, int, str]] = set()
+    # additive; array elements ("{key_prefix}_{n}") and config-gated specs are
+    # *reconciled* so sensors deleted in the app disappear here too. One tracker
+    # holds both kinds; it forgets an entity only once HA removed it.
+    connect_entities = EntityTracker(hass, entry)
     brain_norm = normalize_mac(brain_mac)
-    # Reconciled (presence-gated) entities: array elements AND plain specs
-    # carrying a config_gate share one dict + candidate list.
-    gated_entities: dict[tuple[str, int, str], BinarySensorEntity] = {}
 
     def _make_array_binary_sensor(node, capability, array_spec, index):
         """Bind a per-element factory (own scope avoids late-binding in the loop)."""
@@ -191,10 +196,6 @@ async def async_setup_entry(
         if coordinator.data is None:
             return
 
-        current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
-        stale = {key for key in known_connect_keys if key[0] not in current_macs}
-        known_connect_keys.difference_update(stale)
-
         entities: list[BinarySensorEntity] = []
         array_candidates = []
         for node in coordinator.data.nodes:
@@ -217,19 +218,18 @@ async def async_setup_entry(
                         unique_id = f"revotion_{brain_norm}_{node_mac}_{capability.capability_index}_{spec.key}"
                         array_candidates.append((key, present, unique_id, _make_binary_sensor(node, capability, spec)))
                         continue
-                    if key in known_connect_keys:
+                    if key in connect_entities:
                         continue
-                    known_connect_keys.add(key)
-                    entities.append(
-                        RevotionConnectBinarySensor(
-                            coordinator=coordinator,
-                            brain_mac=brain_mac,
-                            node_mac=node.mac_address,
-                            cap_index=capability.capability_index,
-                            spec=spec,
-                            config_name=capability.config.name,
-                        )
+                    entity = RevotionConnectBinarySensor(
+                        coordinator=coordinator,
+                        brain_mac=brain_mac,
+                        node_mac=node.mac_address,
+                        cap_index=capability.capability_index,
+                        spec=spec,
+                        config_name=capability.config.name,
                     )
+                    connect_entities.track(key, entity)
+                    entities.append(entity)
 
                 for array_spec in descriptor.array_binary_sensors:
                     # Only an array actually present in dev_data is authoritative
@@ -262,19 +262,18 @@ async def async_setup_entry(
 
                 for lock_spec in descriptor.control_locks:
                     key = (node_mac, capability.capability_index, lock_spec.key)
-                    if key in known_connect_keys:
+                    if key in connect_entities:
                         continue
-                    known_connect_keys.add(key)
-                    entities.append(
-                        RevotionConnectControlLockBinarySensor(
-                            coordinator=coordinator,
-                            brain_mac=brain_mac,
-                            node_mac=node.mac_address,
-                            cap_index=capability.capability_index,
-                            spec=lock_spec,
-                            config_name=capability.config.name,
-                        )
+                    lock_entity = RevotionConnectControlLockBinarySensor(
+                        coordinator=coordinator,
+                        brain_mac=brain_mac,
+                        node_mac=node.mac_address,
+                        cap_index=capability.capability_index,
+                        spec=lock_spec,
+                        config_name=capability.config.name,
                     )
+                    connect_entities.track(key, lock_entity)
+                    entities.append(lock_entity)
 
         if entities:
             async_add_entities(entities)
@@ -282,8 +281,7 @@ async def async_setup_entry(
         reconcile_gated_entities(
             hass=hass,
             entity_domain="binary_sensor",
-            entities=gated_entities,
-            current_macs=current_macs,
+            entities=connect_entities,
             candidates=array_candidates,
             async_add_entities=async_add_entities,
         )

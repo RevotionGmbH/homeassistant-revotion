@@ -31,6 +31,7 @@ from .connect.descriptors import NumberSpec
 from .connect.entity import resolve_entity_category, resolve_number_device_class, resolve_number_mode
 from .const import CONF_BRAIN_MAC, DOMAIN, CapabilityType, RevotionConfigEntry
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import RevotionCapabilityMixin, format_mac_for_display, normalize_mac, register_node_device
 from .mqtt_client import RevotionMqttClient
 
@@ -155,7 +156,7 @@ async def async_setup_entry(
     # (Alde fuel_av) decides whether the entity should exist *now*, so the
     # listener adds it when the flag turns on and removes it (live + registry)
     # when it turns off. Tracked at (node, cap, key) granularity.
-    connect_entities: dict[tuple[str, int, str], RevotionConnectNumber] = {}
+    connect_entities = EntityTracker(hass, entry)
 
     def _make_connect_number(node, capability, device_code, spec):
         """Bind a per-spec factory (own scope avoids late-binding in the loop)."""
@@ -179,7 +180,6 @@ async def async_setup_entry(
         """Reconcile presence-gated number entities for descriptor devices."""
         if coordinator.data is None:
             return
-        current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
         candidates = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
@@ -203,7 +203,6 @@ async def async_setup_entry(
             hass=hass,
             entity_domain="number",
             entities=connect_entities,
-            current_macs=current_macs,
             candidates=candidates,
             async_add_entities=async_add_entities,
         )

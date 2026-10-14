@@ -143,7 +143,7 @@ class RevotionMqttClient:
 
         The timer also resets when a connection is established, so on a
         fresh connection this is the connection age until the first
-        message (usually the retained GPS) arrives.
+        message (usually the retained status) arrives.
         """
         if self._last_message_monotonic is None:
             return None

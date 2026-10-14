@@ -22,12 +22,19 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .connect import get_descriptor, has_descriptor, int01_to_bool, read_dev_data_path, resolve_connect_device
+from .connect import (
+    get_descriptor,
+    has_descriptor,
+    int01_to_bool,
+    read_dev_data_path,
+    resolve_connect_device,
+)
 from .connect.control import ConnectCommandMixin, connect_command_dev_data
 from .connect.descriptors import ButtonSpec
 from .connect.entity import resolve_entity_category
 from .const import CONF_BRAIN_MAC, DOMAIN, CapabilityType, RevotionConfigEntry
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import RevotionCapabilityMixin, format_mac_for_display, normalize_mac, register_node_device
 from .mqtt_client import RevotionMqttClient
 
@@ -119,16 +126,14 @@ async def async_setup_entry(
     coordinator = entry.runtime_data.coordinator
     mqtt_client = entry.runtime_data.mqtt_client
     brain_mac = entry.data[CONF_BRAIN_MAC]
-    known: set[tuple[str, int, str]] = set()
+    # Forgets an entity only once HA removed it (discovery.py), so a
+    # node that is briefly missing from an update is never added twice.
+    known = EntityTracker(hass, entry)
 
     def _check_connect() -> None:
         """Create buttons for Connect devices whose descriptor defines them."""
         if coordinator.data is None:
             return
-        current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
-        stale = {key for key in known if key[0] not in current_macs}
-        known.difference_update(stale)
-
         entities: list[RevotionConnectButton] = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
@@ -144,20 +149,19 @@ async def async_setup_entry(
                     key = (node_mac, capability.capability_index, spec.key)
                     if key in known:
                         continue
-                    known.add(key)
                     register_node_device(hass, entry, node, brain_mac)
-                    entities.append(
-                        RevotionConnectButton(
-                            coordinator=coordinator,
-                            brain_mac=brain_mac,
-                            node_mac=node.mac_address,
-                            cap_index=capability.capability_index,
-                            device_code=device_code,
-                            spec=spec,
-                            mqtt_client=mqtt_client,
-                            config_name=capability.config.name,
-                        )
+                    entity = RevotionConnectButton(
+                        coordinator=coordinator,
+                        brain_mac=brain_mac,
+                        node_mac=node.mac_address,
+                        cap_index=capability.capability_index,
+                        device_code=device_code,
+                        spec=spec,
+                        mqtt_client=mqtt_client,
+                        config_name=capability.config.name,
                     )
+                    known.track(key, entity)
+                    entities.append(entity)
 
         if entities:
             async_add_entities(entities)

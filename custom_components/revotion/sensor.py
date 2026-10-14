@@ -49,6 +49,7 @@ from .const import (
     RevotionConfigEntry,
 )
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import Capability, RevotionCapabilityMixin, normalize_mac, register_node_device
 
 _LOGGER = logging.getLogger(__name__)
@@ -856,7 +857,12 @@ async def async_setup_entry(
     """
     coordinator = entry.runtime_data.coordinator
     brain_mac = entry.data[CONF_BRAIN_MAC]
+    # Nodes already evaluated *while present*. A node that leaves
+    # coordinator.data is dropped from the set, so its return (re-pair, or an
+    # optimistic unpair drop the backend never confirmed) is evaluated again --
+    # native_entities then adds only what HA no longer has (see discovery.py).
     known_node_macs: set[str] = set()
+    native_entities = EntityTracker(hass, entry)
 
     # Brain-level diagnostic sensors (always created once at setup)
     async_add_entities(
@@ -871,6 +877,7 @@ async def async_setup_entry(
         if coordinator.data is None:
             return
         current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
+        known_node_macs.intersection_update(current_macs)
         new_macs = current_macs - known_node_macs
         if not new_macs:
             return
@@ -1029,8 +1036,8 @@ async def async_setup_entry(
                                 )
                             )
 
-        if entities:
-            async_add_entities(entities)
+        if new_entities := native_entities.claim(entities):
+            async_add_entities(new_entities)
 
     # Connect (Type 12) uses deferred discovery: the device code and dev_data
     # only arrive with the first /data message, after the node is already
@@ -1038,14 +1045,12 @@ async def async_setup_entry(
     # later messages are picked up and nothing is added twice. The third element
     # is the descriptor spec.key for tailored devices, or the flat dev_data path
     # for the generic mirror -- both unique within a (node, cap). Array-sensor
-    # families are *reconciled* against the array length instead (elements
-    # removed from the data drop their entities, see binary_sensor.py).
-    known_connect_paths: set[tuple[str, int, str]] = set()
+    # families and specs carrying an available_path / config_gate are
+    # *reconciled* instead (elements removed from the data / gates turning off
+    # drop their entities, see binary_sensor.py). One tracker holds both kinds;
+    # it forgets an entity only once HA removed it (discovery.py).
+    connect_entities = EntityTracker(hass, entry)
     brain_norm = normalize_mac(brain_mac)
-    # Reconciled (presence-gated) Connect sensors: array elements AND plain
-    # specs carrying an available_path / config_gate share one dict + candidate
-    # list, so both are created/removed by the same reconcile pass.
-    gated_entities: dict[tuple[str, int, str], SensorEntity] = {}
 
     def _make_array_sensor(node, capability, array_spec, index):
         """Bind a per-element factory (own scope avoids late-binding in the loop)."""
@@ -1128,12 +1133,6 @@ async def async_setup_entry(
         if coordinator.data is None:
             return
 
-        # Drop tracked paths for nodes that are gone (e.g. unpaired) so a later
-        # re-pair recreates their entities and the set never grows unbounded (S2).
-        current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
-        stale = {key for key in known_connect_paths if key[0] not in current_macs}
-        known_connect_paths.difference_update(stale)
-
         entities: list[SensorEntity] = []
         array_candidates = []
         for node in coordinator.data.nodes:
@@ -1163,34 +1162,32 @@ async def async_setup_entry(
                                 (key, present, unique_id, _make_descriptor_sensor(node, capability, spec))
                             )
                             continue
-                        if key in known_connect_paths:
+                        if key in connect_entities:
                             continue
-                        known_connect_paths.add(key)
-                        entities.append(
-                            RevotionConnectDescriptorSensor(
-                                coordinator=coordinator,
-                                brain_mac=brain_mac,
-                                node_mac=node.mac_address,
-                                cap_index=capability.capability_index,
-                                spec=spec,
-                                config_name=capability.config.name,
-                            )
+                        entity = RevotionConnectDescriptorSensor(
+                            coordinator=coordinator,
+                            brain_mac=brain_mac,
+                            node_mac=node.mac_address,
+                            cap_index=capability.capability_index,
+                            spec=spec,
+                            config_name=capability.config.name,
                         )
+                        connect_entities.track(key, entity)
+                        entities.append(entity)
                     for enum_spec in descriptor.enum_sensors:
                         key = (node_mac, capability.capability_index, enum_spec.key)
-                        if key in known_connect_paths:
+                        if key in connect_entities:
                             continue
-                        known_connect_paths.add(key)
-                        entities.append(
-                            RevotionConnectEnumSensor(
-                                coordinator=coordinator,
-                                brain_mac=brain_mac,
-                                node_mac=node.mac_address,
-                                cap_index=capability.capability_index,
-                                spec=enum_spec,
-                                config_name=capability.config.name,
-                            )
+                        enum_entity = RevotionConnectEnumSensor(
+                            coordinator=coordinator,
+                            brain_mac=brain_mac,
+                            node_mac=node.mac_address,
+                            cap_index=capability.capability_index,
+                            spec=enum_spec,
+                            config_name=capability.config.name,
                         )
+                        connect_entities.track(key, enum_entity)
+                        entities.append(enum_entity)
                     for array_spec in descriptor.array_sensors:
                         # Only an array actually present in dev_data is
                         # authoritative; absent means "no information" -- skip
@@ -1221,19 +1218,18 @@ async def async_setup_entry(
 
                 for flat_path in flatten_connect_capability(capability):
                     key = (node_mac, capability.capability_index, flat_path)
-                    if key in known_connect_paths:
+                    if key in connect_entities:
                         continue
-                    known_connect_paths.add(key)
-                    entities.append(
-                        RevotionConnectSensor(
-                            coordinator=coordinator,
-                            brain_mac=brain_mac,
-                            node_mac=node.mac_address,
-                            cap_index=capability.capability_index,
-                            flat_path=flat_path,
-                            device_code=device_code,
-                        )
+                    mirror_entity = RevotionConnectSensor(
+                        coordinator=coordinator,
+                        brain_mac=brain_mac,
+                        node_mac=node.mac_address,
+                        cap_index=capability.capability_index,
+                        flat_path=flat_path,
+                        device_code=device_code,
                     )
+                    connect_entities.track(key, mirror_entity)
+                    entities.append(mirror_entity)
 
         if entities:
             async_add_entities(entities)
@@ -1241,8 +1237,7 @@ async def async_setup_entry(
         reconcile_gated_entities(
             hass=hass,
             entity_domain="sensor",
-            entities=gated_entities,
-            current_macs=current_macs,
+            entities=connect_entities,
             candidates=array_candidates,
             async_add_entities=async_add_entities,
         )

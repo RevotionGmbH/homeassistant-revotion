@@ -65,6 +65,9 @@ ACK_FAILURE_REASONS: dict[int, str] = {
     1: "node unreachable (radio send failed)",
     2: "node missed its wake window",
     3: "brain command queue full",
+    # Brain >= 2.4.0: an automation rule holds the capability. Codes 4-9, 11
+    # and 12 only answer document (rule/scene) commands, never ctr_data.
+    10: "blocked by an automation rule",
 }
 
 # Persistent-notification body when a command gets no MQTT echo within the

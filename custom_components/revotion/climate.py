@@ -44,6 +44,7 @@ from .connect.descriptors import ClimateSpec
 from .connect.entity import resolve_hvac_mode
 from .const import CONF_BRAIN_MAC, DOMAIN, CapabilityType, RevotionConfigEntry
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import RevotionCapabilityMixin, format_mac_for_display, normalize_mac, register_node_device
 from .mqtt_client import RevotionMqttClient
 
@@ -64,6 +65,12 @@ class RevotionConnectClimate(
     """
 
     _attr_has_entity_name = True
+    # HA 2026.11 renamed the temperature members to native_* and warns about the
+    # old names (removed in 2027.11); HA < 2026.11 only knows the old ones. Both
+    # sets live on this class: HA's migrate_deprecated_entity_members prefers the
+    # native member when a class provides both, so 2026.11+ stays warning-free
+    # and older versions (Min-HA 2025.2) keep reading the old names.
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_assumed_state = True
     # Default empty so .fan_modes never raises for non-fan climates; the
@@ -186,7 +193,7 @@ class RevotionConnectClimate(
         return None
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         """Return the measured temperature, or None if the device reports none."""
         if self._spec.current_temp_path is None:
             return None
@@ -196,7 +203,7 @@ class RevotionConnectClimate(
         return read_dev_data_path(cap, self._spec.current_temp_path)
 
     @property
-    def target_temperature(self) -> float | None:
+    def native_target_temperature(self) -> float | None:
         """Return the setpoint (optimistic value wins until echo)."""
         if self._optimistic_target_temp is not None:
             return self._optimistic_target_temp
@@ -204,6 +211,17 @@ class RevotionConnectClimate(
         if cap is None:
             return None
         return read_dev_data_path(cap, self._spec.target_temp_path)
+
+    # Pre-2026.11 names, see the note at _attr_native_temperature_unit.
+    @property
+    def current_temperature(self) -> float | None:  # type: ignore[misc]
+        """Return the measured temperature (HA < 2026.11)."""
+        return self.native_current_temperature
+
+    @property
+    def target_temperature(self) -> float | None:  # type: ignore[misc]
+        """Return the setpoint (HA < 2026.11)."""
+        return self.native_target_temperature
 
     @property
     def fan_modes(self) -> list[str] | None:
@@ -407,7 +425,7 @@ async def async_setup_entry(
     # should exist *now*, so the listener adds it when the flag turns on and
     # removes it (live + registry, incl. a ghost from a prior session) when it
     # turns off -- no greyed-out leftover.
-    entities: dict[tuple[str, int, str], RevotionConnectClimate] = {}
+    entities = EntityTracker(hass, entry)
 
     def _make_climate(node, capability, device_code, spec):
         """Bind a per-spec factory (own scope avoids late-binding in the loop)."""
@@ -431,7 +449,6 @@ async def async_setup_entry(
         """Reconcile presence-gated climate entities for descriptor Connect devices."""
         if coordinator.data is None:
             return
-        current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
         candidates = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
@@ -453,7 +470,6 @@ async def async_setup_entry(
             hass=hass,
             entity_domain="climate",
             entities=entities,
-            current_macs=current_macs,
             candidates=candidates,
             async_add_entities=async_add_entities,
         )

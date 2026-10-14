@@ -16,6 +16,12 @@ Removal is keyed on the entity's ``unique_id`` (not just a live reference) so a
 ghost registry row left by an earlier session -- e.g. a zone-2 climate created
 before this gate existed -- is cleaned up on the first reconcile after a
 restart, not only when a flag flips during a running session.
+
+"Already added" is tracked by :class:`..discovery.EntityTracker`, which follows
+HA's entity lifecycle rather than the coordinator snapshot: an update that does
+not produce a Connect entity (device code not resolved, node briefly missing) is
+"no information", never a reason to forget it -- the entity is still live in HA,
+and building it again would add a second entity with the same unique_id.
 """
 
 from __future__ import annotations
@@ -31,6 +37,8 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity import Entity
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+    from ..discovery import EntityTracker
 
 # A reconciliation candidate for one gated spec of one Connect capability:
 #   key        -- tracking key; its first element is the node MAC
@@ -62,8 +70,7 @@ def reconcile_gated_entities(
     *,
     hass: HomeAssistant,
     entity_domain: str,
-    entities: dict[tuple[Hashable, ...], Entity],
-    current_macs: set[str],
+    entities: EntityTracker,
     candidates: list[Candidate],
     async_add_entities: AddEntitiesCallback,
 ) -> None:
@@ -71,41 +78,33 @@ def reconcile_gated_entities(
 
     ``entity_domain`` is the HA platform domain ("climate" / "switch" / "light")
     used to resolve a unique_id back to an entity_id in the registry.
-    ``entities`` is the platform's persistent ``key -> entity`` map (the source
-    of truth for "already created this session"). ``candidates`` is the full list
-    of ``(key, present, unique_id, factory)`` for every gated spec of every
-    *currently known* Connect capability.
+    ``entities`` is the platform's :class:`..discovery.EntityTracker` (the source of
+    truth for "already created"). ``candidates`` is the list of
+    ``(key, present, unique_id, factory)`` for every gated spec of every Connect
+    capability that is *resolved in this update*.
 
-    - present & not yet created  -> build via ``factory`` and add.
+    - present & not tracked      -> build via ``factory`` and add.
     - not present                -> remove the entity (live + registry row,
-      including a ghost left by an earlier session) and drop any tracking.
-    - tracked key absent from ``candidates`` (its node unpaired) -> drop tracking
-      only; node-device teardown takes the entity unavailable, matching the
-      prior behaviour (we must not delete its registry row here).
+      including a ghost left by an earlier session) and forget it.
+    - tracked key absent from ``candidates`` (device code not resolved in this
+      update, node briefly missing or unpaired) -> untouched. Absent means "no
+      information"; the entity is still live in HA, so forgetting it would make
+      the next update add a duplicate. A real unpair removes the node device,
+      whose registry rows take the entity -- and its tracking -- with them.
     """
-    present_keys: set[tuple[Hashable, ...]] = set()
-    candidate_keys: set[tuple[Hashable, ...]] = set()
     new_entities: list[Entity] = []
 
     for key, present, unique_id, factory in candidates:
-        candidate_keys.add(key)
         if present:
-            present_keys.add(key)
             if key not in entities:
                 entity = factory()
-                entities[key] = entity
+                entities.track(key, entity)
                 new_entities.append(entity)
         else:
             # Gated off: forget any live reference and remove the entity + any
             # orphaned registry row (idempotent -- no-op once gone).
-            entities.pop(key, None)
+            entities.forget(key)
             remove_gated_entity(hass, entity_domain, unique_id)
-
-    # Tracked keys no longer produced at all -> the node unpaired. Drop the
-    # reference only; the node-device teardown handles the entity itself.
-    for key in list(entities):
-        if key not in candidate_keys:
-            entities.pop(key, None)
 
     if new_entities:
         async_add_entities(new_entities)

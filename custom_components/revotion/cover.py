@@ -52,6 +52,7 @@ from .const import (
     RevotionConfigEntry,
 )
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import (
     RevotionCapabilityMixin,
     RevotionCommandMixin,
@@ -264,7 +265,12 @@ async def async_setup_entry(
     coordinator = entry.runtime_data.coordinator
     mqtt_client = entry.runtime_data.mqtt_client
     brain_mac = entry.data[CONF_BRAIN_MAC]
+    # Nodes already evaluated *while present*. A node that leaves
+    # coordinator.data is dropped from the set, so its return (re-pair, or an
+    # optimistic unpair drop the backend never confirmed) is evaluated again --
+    # native_entities then adds only what HA no longer has (see discovery.py).
     known_node_macs: set[str] = set()
+    native_entities = EntityTracker(hass, entry)
 
     @callback
     def _check_device() -> None:
@@ -272,6 +278,7 @@ async def async_setup_entry(
         if coordinator.data is None:
             return
         current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
+        known_node_macs.intersection_update(current_macs)
         new_macs = current_macs - known_node_macs
         if not new_macs:
             return
@@ -297,8 +304,8 @@ async def async_setup_entry(
                         )
                     )
 
-        if entities:
-            async_add_entities(entities)
+        if new_entities := native_entities.claim(entities):
+            async_add_entities(new_entities)
 
     _check_device()  # Initial entity creation
     entry.async_on_unload(coordinator.async_add_listener(_check_device))

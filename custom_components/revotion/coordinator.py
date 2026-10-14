@@ -456,9 +456,16 @@ class RevotionCoordinator(DataUpdateCoordinator[Brain]):
                     f"revotion_config_resync_{self._brain_mac}",
                 )
             case "gps":
+                # Brain >= 2.4.0 publishes /gps with retain 0, but a fix
+                # retained by older firmware stays at the broker (the Brain
+                # cannot clear it) and is re-sent on every (re)subscribe. Once
+                # a position is known (REST at setup, or a live fix), that
+                # frozen retained fix must not overwrite it.
+                if retained and self._gps_data is not None:
+                    _LOGGER.debug("Ignoring retained GPS for Brain %s, position already known", self._brain_mac)
+                    return
                 self._gps_data = data
                 _LOGGER.debug("GPS data received for Brain %s", self._brain_mac)
-                self.async_set_updated_data(self.data)
             case "ack":
                 self._handle_ack_payload(data)
             case "error":

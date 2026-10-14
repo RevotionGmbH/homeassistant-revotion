@@ -27,11 +27,18 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .connect import get_descriptor, has_descriptor, int01_to_bool, read_dev_data_path, resolve_connect_device
+from .connect import (
+    get_descriptor,
+    has_descriptor,
+    int01_to_bool,
+    read_dev_data_path,
+    resolve_connect_device,
+)
 from .connect.control import ConnectCommandMixin, connect_command_dev_data
 from .connect.descriptors import LockSpec
 from .const import CONF_BRAIN_MAC, DOMAIN, CapabilityType, RevotionConfigEntry
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import Capability, RevotionCapabilityMixin, format_mac_for_display, normalize_mac, register_node_device
 from .mqtt_client import RevotionMqttClient
 
@@ -164,16 +171,14 @@ async def async_setup_entry(
     coordinator = entry.runtime_data.coordinator
     mqtt_client = entry.runtime_data.mqtt_client
     brain_mac = entry.data[CONF_BRAIN_MAC]
-    known: set[tuple[str, int, str]] = set()
+    # Forgets an entity only once HA removed it (discovery.py), so a
+    # node that is briefly missing from an update is never added twice.
+    known = EntityTracker(hass, entry)
 
     def _check_connect() -> None:
         """Create locks for Connect devices whose descriptor defines one (if configured)."""
         if coordinator.data is None:
             return
-        current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
-        stale = {key for key in known if key[0] not in current_macs}
-        known.difference_update(stale)
-
         entities: list[RevotionConnectLock] = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
@@ -195,20 +200,19 @@ async def async_setup_entry(
                     # as handled: a later config-sync that sets the flag must be
                     # able to pull the entity in on a subsequent update (S2).
                     continue
-                known.add(key)
                 register_node_device(hass, entry, node, brain_mac)
-                entities.append(
-                    RevotionConnectLock(
-                        coordinator=coordinator,
-                        brain_mac=brain_mac,
-                        node_mac=node.mac_address,
-                        cap_index=capability.capability_index,
-                        device_code=device_code,
-                        spec=descriptor.lock,
-                        mqtt_client=mqtt_client,
-                        config_name=capability.config.name,
-                    )
+                entity = RevotionConnectLock(
+                    coordinator=coordinator,
+                    brain_mac=brain_mac,
+                    node_mac=node.mac_address,
+                    cap_index=capability.capability_index,
+                    device_code=device_code,
+                    spec=descriptor.lock,
+                    mqtt_client=mqtt_client,
+                    config_name=capability.config.name,
                 )
+                known.track(key, entity)
+                entities.append(entity)
 
         if entities:
             async_add_entities(entities)

@@ -59,6 +59,7 @@ from .const import (
     RevotionConfigEntry,
 )
 from .coordinator import RevotionCoordinator
+from .discovery import EntityTracker
 from .models import (
     RevotionCapabilityMixin,
     dump_wire_json,
@@ -672,13 +673,19 @@ async def async_setup_entry(
     mqtt_client = entry.runtime_data.mqtt_client
     brain_mac = entry.data[CONF_BRAIN_MAC]
     brain_norm = normalize_mac(brain_mac)
+    # Nodes already evaluated *while present*. A node that leaves
+    # coordinator.data is dropped from the set, so its return (re-pair, or an
+    # optimistic unpair drop the backend never confirmed) is evaluated again --
+    # native_entities then adds only what HA no longer has (see discovery.py).
     known_node_macs: set[str] = set()
+    native_entities = EntityTracker(hass, entry)
 
     def _check_device() -> None:
         """Check for new nodes and add light entities dynamically."""
         if coordinator.data is None:
             return
         current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
+        known_node_macs.intersection_update(current_macs)
         new_macs = current_macs - known_node_macs
         if not new_macs:
             return
@@ -722,8 +729,8 @@ async def async_setup_entry(
                             )
                         )
 
-        if entities:
-            async_add_entities(entities)
+        if new_entities := native_entities.claim(entities):
+            async_add_entities(new_entities)
 
     # Connect (Type 12) lights use deferred discovery (descriptor + dev_data
     # only known after the first /data message) and are presence-gated: each
@@ -731,7 +738,7 @@ async def async_setup_entry(
     # decides whether the light should exist *now*, so the listener adds it
     # when the flag turns on and removes it (live + registry) when it turns off.
     # Tracked at (node, cap, key).
-    connect_entities: dict[tuple[str, int, str], RevotionConnectLight] = {}
+    connect_entities = EntityTracker(hass, entry)
 
     def _make_connect_light(node, capability, device_code, spec):
         """Bind a per-spec factory (own scope avoids late-binding in the loop)."""
@@ -760,7 +767,6 @@ async def async_setup_entry(
         """
         if coordinator.data is None:
             return
-        current_macs = {normalize_mac(n.mac_address) for n in coordinator.data.nodes}
         candidates = []
         for node in coordinator.data.nodes:
             node_mac = normalize_mac(node.mac_address)
@@ -784,7 +790,6 @@ async def async_setup_entry(
             hass=hass,
             entity_domain="light",
             entities=connect_entities,
-            current_macs=current_macs,
             candidates=candidates,
             async_add_entities=async_add_entities,
         )
