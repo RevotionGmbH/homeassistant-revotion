@@ -4,6 +4,14 @@ All notable changes to the Revotion Home Assistant integration are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/); the version
 is the release tag and matches `manifest.json` (pre-releases use PEP 440 style, e.g. `0.4.0b1`).
 
+## 0.5.3 — 2026-11-03
+
+### Fixed
+- Truma CP plus air conditioner: switching it on from Home Assistant no longer makes it cool to 16 °C. While the air conditioner is off, the panel reports a target temperature of 0; this value was sent along when switching on, and the Connect raised it to its minimum of 16 °C. Home Assistant now shows 22 °C in this case and switches on with it, the same as the Revotion app
+
+### Changed
+- README: new section "Limitations". The integration needs an internet connection because it works through the Revotion cloud, commands only work while the Brain is on WiFi, and functions the Revotion app reads directly from the Brain over Bluetooth, such as leveling, are not available in Home Assistant
+
 ## 0.5.2 — 2026-10-14
 
 ### Fixed

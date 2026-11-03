@@ -494,6 +494,11 @@ class ClimateSpec:
     fan_mode_hvac_only: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Dynamic hvac-mode filtering (availability flags). Empty -> static list.
     hvac_mode_av_flags: dict[str, str] = field(default_factory=dict)
+    # Setpoint shown and sent on switch-on while the reported one lies outside
+    # min_temp..max_temp. Truma CP+ reports air_con.t_temp 0 while the AC is
+    # off; sending that 0 on switch-on made the Connect clamp to 16 °C (app fix
+    # d6ff1a87, NodeDataTrumaAirCon.validTargetTemp). None -> no substitution.
+    fallback_target_temp: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

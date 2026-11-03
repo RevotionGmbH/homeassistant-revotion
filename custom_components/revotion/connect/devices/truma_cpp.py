@@ -222,6 +222,9 @@ TRUMA_CPP_DESCRIPTOR = ConnectDeviceDescriptor(
             min_temp=16,
             max_temp=31,
             target_temp_step=1,
+            # The panel reports t_temp 0 while the AC is off; switch on with
+            # 22 °C like the app tile instead (app d6ff1a87).
+            fallback_target_temp=22,
             mode_value_to_hvac={
                 AC_COOL: HVAC_COOL,
                 AC_HEAT: HVAC_HEAT,

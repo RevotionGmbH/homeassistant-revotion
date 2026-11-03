@@ -210,7 +210,20 @@ class RevotionConnectClimate(
         cap = self._find_capability()
         if cap is None:
             return None
-        return read_dev_data_path(cap, self._spec.target_temp_path)
+        return self._valid_target_temp(read_dev_data_path(cap, self._spec.target_temp_path))
+
+    def _valid_target_temp(self, value: Any) -> Any:
+        """Replace a setpoint outside min_temp..max_temp by the spec fallback.
+
+        Only for specs with ``fallback_target_temp`` (Truma CP+ AC reports 0
+        while off); every other spec gets the value back unchanged.
+        """
+        fallback = self._spec.fallback_target_temp
+        if fallback is None:
+            return value
+        if isinstance(value, (int, float)) and self._spec.min_temp <= value <= self._spec.max_temp:
+            return value
+        return fallback
 
     # Pre-2026.11 names, see the note at _attr_native_temperature_unit.
     @property
@@ -353,7 +366,14 @@ class RevotionConnectClimate(
         if self._spec.mode_path is not None:
             set_dev_data_path(dev_data, self._spec.mode_path, mode_value)
 
-        effective_target = target_temp if target_temp is not None else self._current_target_temp()
+        if target_temp is not None:
+            effective_target = target_temp
+        elif state_value:
+            # Switching on (or staying on): never send an out-of-range setpoint
+            # such as the 0 the Truma CP+ AC reports while off.
+            effective_target = self._valid_target_temp(self._current_target_temp())
+        else:
+            effective_target = self._current_target_temp()
         if effective_target is not None:
             set_dev_data_path(dev_data, self._spec.target_temp_path, effective_target)
 

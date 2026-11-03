@@ -23,6 +23,12 @@ A custom Home Assistant integration for [Revotion](https://revotion.de) digital 
 - Revotion Brain with WiFi connection (Brain version 2.3.2 or newer; some features -- Victron energy devices, total current, command acknowledgements, FreshJet input-current limit -- require 2.3.3)
 - Revotion Flutter App (to generate the access token)
 
+## Limitations
+
+- **Internet required:** The integration talks to the Revotion cloud (`mqtt-ha.revotion.net`, `api-ha.revotion.net`), not directly to the Brain. Both the Brain and Home Assistant need an internet connection. Without it, all Revotion entities become unavailable, even when the Brain and Home Assistant share the same WiFi. Local control without the cloud is not available yet ([#3](https://github.com/RevotionGmbH/homeassistant-revotion/issues/3)).
+- **Commands over WiFi only:** While the Brain is connected via cellular, values keep updating, but commands are blocked to protect the SIM data volume.
+- **Bluetooth-only functions:** Home Assistant only sees what the Brain sends to the Revotion cloud. Functions the Revotion app reads directly from the Brain over Bluetooth are not available, in particular **leveling** (vehicle inclination). The `Level` sensor in Home Assistant is a tank level, not leveling.
+
 ## Installation
 
 ### HACS (Recommended)
@@ -121,7 +127,8 @@ Download diagnostics from **Settings > Devices & Services > Revotion > 3 dots > 
 
 | Issue | Solution |
 |-------|----------|
-| Entities show "unavailable" | Check if Brain is online in the Revotion App |
+| Entities show "unavailable" | Check if Brain is online in the Revotion App. Without an internet connection in the vehicle the integration cannot reach the Brain (see [Limitations](#limitations)) |
+| Commands are refused | The Brain is on cellular; commands only work over WiFi (see [Limitations](#limitations)) |
 | No real-time updates | Verify MQTT connection in diagnostics download |
 | Token expired | Follow token renewal steps above |
 | New node not appearing | Wait 5 seconds after pairing, then check HA |
