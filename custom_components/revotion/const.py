@@ -173,6 +173,9 @@ class ConnectDevice(IntEnum):
     """
 
     AIRTRONIC3 = 256
+    # Autoterm (Planar) Air diesel heater, firmware 0x130. The legacy brain-only
+    # placeholder 2048 is retired and must never be reused.
+    AUTOTERM_AIR = 304
     TRUMA_COMBI = 512
     TRUMA_CPP = 514
     # VE.Direct / CAN energy family (firmware 0x300 block, Brain >= 2.3.3;
@@ -224,6 +227,7 @@ CAPABILITY_TYPE_LABELS: dict[CapabilityType, str] = {
 # (brand + product name as the manufacturer markets them).
 CONNECT_DEVICE_LABELS: dict[ConnectDevice, str] = {
     ConnectDevice.AIRTRONIC3: "Eberspächer Airtronic 3",
+    ConnectDevice.AUTOTERM_AIR: "Autoterm Air",
     ConnectDevice.TRUMA_COMBI: "Truma Combi",
     ConnectDevice.TRUMA_CPP: "Truma CP+",
     ConnectDevice.VE_DIRECT_BMV: "Victron BMV / SmartShunt",

@@ -574,6 +574,8 @@ class RevotionConnectDescriptorSensor(RevotionCapabilityMixin, CoordinatorEntity
             self._attr_suggested_display_precision = precision
         self._attr_entity_category = resolve_entity_category(spec.entity_category)
         self._attr_state_class = resolve_sensor_state_class(spec.state_class)
+        if not spec.enabled_default:
+            self._attr_entity_registry_enabled_default = False
 
     @property
     def available(self) -> bool:

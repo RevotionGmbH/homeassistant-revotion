@@ -296,7 +296,9 @@ class ConnectCommandMixin:
         fragment = dev_data
         block_builder = self._command_block_builder()
         if block_builder is not None:
-            dev_data = self._expand_command_block(block_builder, fragment)
+            dev_data = self._expand_command_block(
+                block_builder, fragment, authoritative=self._command_block_authoritative()
+            )
 
         payload = self._build_base_payload()  # type: ignore[attr-defined]
         payload["device"] = self._device_code
@@ -345,7 +347,16 @@ class ConnectCommandMixin:
         descriptor = get_descriptor(self._device_code)
         return descriptor.command_block if descriptor is not None else None
 
-    def _expand_command_block(self, block_builder: Any, fragment: dict[str, Any]) -> dict[str, Any]:
+    def _command_block_authoritative(self) -> bool:
+        """Return whether the builder output is sent without re-merging the fragment."""
+        from . import get_descriptor
+
+        descriptor = get_descriptor(self._device_code)
+        return descriptor is not None and descriptor.command_block_authoritative
+
+    def _expand_command_block(
+        self, block_builder: Any, fragment: dict[str, Any], *, authoritative: bool = False
+    ) -> dict[str, Any]:
         """Expand a changed-fields fragment into the complete control block.
 
         The firmware decodes ``dev_data`` into a full struct and forwards it to
@@ -361,7 +372,10 @@ class ConnectCommandMixin:
            writable block from that state (``toDataPayload`` parity, including
            conditional fields like the fridge ``send_mode`` split),
         3. the fragment is merged on top once more as a guard so the
-           explicitly commanded values always reach the wire.
+           explicitly commanded values always reach the wire -- unless the
+           descriptor marks its builder ``command_block_authoritative``
+           (state/mode-shaped payloads such as the Autoterm, where the builder
+           must drop fields that do not belong to the commanded mode).
         """
         cap = self._find_capability()  # type: ignore[attr-defined]
         current = cap.data.get("dev_data") if cap is not None else None
@@ -370,6 +384,8 @@ class ConnectCommandMixin:
         if overlay:
             effective = deep_merge_dev_data(effective, overlay)
         effective = deep_merge_dev_data(effective, fragment)
+        if authoritative:
+            return block_builder(effective)
         return deep_merge_dev_data(block_builder(effective), fragment)
 
 

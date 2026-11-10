@@ -102,6 +102,10 @@ class SensorSpec:
             always present.
         config_gate: Optional config-based creation gate (see :data:`ConfigGate`;
             BMV aux_typ selecting temp vs. aux-voltage vs. mid-point rows).
+        enabled_default: ``False`` registers the entity disabled on first
+            creation. An already registered (enabled) entity stays enabled --
+            used for low-value fields a device took over from the generic
+            mirror (Autoterm ``timer.*``), so existing installs keep them.
     """
 
     path: str
@@ -113,6 +117,7 @@ class SensorSpec:
     state_class: str | None = None
     available_path: str | None = None
     config_gate: ConfigGate | None = None
+    enabled_default: bool = True
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -499,6 +504,22 @@ class ClimateSpec:
     # off; sending that 0 on switch-on made the Connect clamp to 16 °C (app fix
     # d6ff1a87, NodeDataTrumaAirCon.validTargetTemp). None -> no substitution.
     fallback_target_temp: float | None = None
+    # Preset modes for heaters with several heat modes on one HVAC mode
+    # (Autoterm: thermostat / power both read as HEAT). The raw mode_path value
+    # maps to a preset while ``preset_hvac`` is active; the preset decides which
+    # mode value a switch-on into ``preset_hvac`` sends. Empty -> no presets.
+    preset_hvac: str | None = None
+    mode_value_to_preset: dict[int, str] = field(default_factory=dict)
+    preset_to_mode_value: dict[str, int] = field(default_factory=dict)
+    # Raw mode values in which the device regulates on target_temp (Autoterm:
+    # thermostat only). Non-empty -> a setpoint set while off or in another mode
+    # is kept locally and sent with the next start into such a mode (the
+    # device would ignore it and the optimistic value would never confirm).
+    # Empty -> setpoints are always sent (all other heaters).
+    setpoint_mode_values: tuple[int, ...] = ()
+    # Optional translation_key (entity.climate.<key> in strings.json) so preset
+    # names are translated; the entity name still comes from ``name``.
+    translation_key: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -637,6 +658,13 @@ class NumberSpec:
     # Optional dev_stat path locking control on 6/7; see ClimateSpec.lock_path.
     lock_path: str | None = None
     extra_command_fields: dict[str, int] = field(default_factory=dict)
+    # dev_data path -> allowed values; a set is refused (ServiceValidationError
+    # with ``write_requires_key``) unless every path currently reads one of its
+    # values. Autoterm levels are mode-keyed: power_level only takes effect
+    # while running in power mode -- anywhere else the device ignores it and
+    # the optimistic value would never confirm. Empty -> always writable.
+    write_requires: dict[str, tuple[Any, ...]] = field(default_factory=dict)
+    write_requires_key: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -805,3 +833,9 @@ class ConnectDeviceDescriptor:
     # for every ctr_data command; None -> commands publish only the changed
     # fields (single-field / command-code devices). See CommandBlockBuilder.
     command_block: CommandBlockBuilder | None = None
+    # True -> the command_block builder output is sent as-is (the commanded
+    # fragment is NOT merged on top again). For devices whose control payload
+    # is shaped by state/mode (Autoterm: ``{"state": 0}`` to stop, one
+    # mode-keyed level/setpoint field to start), where the builder must be able
+    # to drop fields the fragment carried.
+    command_block_authoritative: bool = False

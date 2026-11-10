@@ -15,6 +15,7 @@ from typing import Any
 
 from homeassistant.components.number import NumberEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -128,8 +129,29 @@ class RevotionConnectNumber(
         real = read_dev_data_path(cap, self._spec.path)
         return isinstance(real, (int, float)) and abs(float(real) - self._optimistic_value) <= 0.05
 
+    def _assert_write_allowed(self) -> None:
+        """Refuse a set the device would ignore (spec ``write_requires``).
+
+        Autoterm levels are mode-keyed: the node applies power_level only while
+        running in power mode (fan_level only in ventilation). Sending it in any
+        other state is a silent no-op on the device and would leave the
+        optimistic value to time out, so the user gets a clear error instead.
+        """
+        if not self._spec.write_requires:
+            return
+        cap = self._find_capability()
+        for path, allowed in self._spec.write_requires.items():
+            value = read_dev_data_path(cap, path) if cap is not None else None
+            if value not in allowed:
+                raise ServiceValidationError(
+                    f"{self.name} can only be set while the device runs in the matching mode.",
+                    translation_domain=DOMAIN,
+                    translation_key=self._spec.write_requires_key or "number_write_not_allowed",
+                )
+
     async def async_set_native_value(self, value: float) -> None:
         """Set the value by publishing it at the spec's write_path."""
+        self._assert_write_allowed()
         wire_value: Any = int(value) if self._spec.as_int else value
         dev_data: dict[str, Any] = {}
         set_dev_data_path(dev_data, self._spec.write_path, wire_value)

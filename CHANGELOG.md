@@ -4,6 +4,17 @@ All notable changes to the Revotion Home Assistant integration are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/); the version
 is the release tag and matches `manifest.json` (pre-releases use PEP 440 style, e.g. `0.4.0b1`).
 
+## 0.6.0 — 2026-11-10
+
+### Added
+- Autoterm Air heaters on the NODE Connect can now be controlled from Home Assistant, not only read. The heater appears as a climate entity: switch it on and off, set the target temperature (0–30 °C) and choose between heating and ventilation. In heating mode you pick the preset "Thermostat" (heats to the target temperature) or "Power" (heats at a fixed power level)
+- New number entities for the Autoterm power level (1–6, power mode) and fan level (1–10, ventilation). They can be changed while the heater runs in the matching mode
+- A target temperature set while the heater is off or in power mode is kept and used for the next start in thermostat mode
+- While the Autoterm's own wall panel has taken control, Home Assistant shows the controls as locked, like the Revotion app
+
+### Changed
+- Existing Autoterm sensors keep their entities and history; they get readable names, units and device classes (temperatures, supply voltage). The status values are now grouped as diagnostic entities
+
 ## 0.5.3 — 2026-11-03
 
 ### Fixed

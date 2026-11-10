@@ -299,6 +299,18 @@
       "gps_position": {
         "name": "GPS-Position"
       }
+    },
+    "climate": {
+      "autoterm_heater": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "thermostat": "Thermostat",
+              "power": "Leistung"
+            }
+          }
+        }
+      }
     }
   },
   "exceptions": {
@@ -313,6 +325,15 @@
     },
     "control_locked_main_panel_error": {
       "message": "Bedienung gesperrt - Fehler am Gerät, siehe Hauptpanel."
+    },
+    "autoterm_power_level_mode": {
+      "message": "Die Leistungsstufe lässt sich nur einstellen, während die Heizung im Leistungsbetrieb läuft."
+    },
+    "autoterm_fan_level_mode": {
+      "message": "Die Lüfterstufe lässt sich nur einstellen, während die Heizung im Lüftungsbetrieb läuft."
+    },
+    "number_write_not_allowed": {
+      "message": "Dieser Wert lässt sich nur im passenden Betriebsmodus einstellen."
     }
   }
 }

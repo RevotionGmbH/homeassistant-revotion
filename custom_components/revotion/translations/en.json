@@ -299,6 +299,18 @@
       "gps_position": {
         "name": "GPS Position"
       }
+    },
+    "climate": {
+      "autoterm_heater": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "thermostat": "Thermostat",
+              "power": "Power"
+            }
+          }
+        }
+      }
     }
   },
   "exceptions": {
@@ -313,6 +325,15 @@
     },
     "control_locked_main_panel_error": {
       "message": "Controls are locked - device error, check the main panel."
+    },
+    "autoterm_power_level_mode": {
+      "message": "The power level can only be set while the heater runs in power mode."
+    },
+    "autoterm_fan_level_mode": {
+      "message": "The fan level can only be set while the heater runs in ventilation mode."
+    },
+    "number_write_not_allowed": {
+      "message": "This value can only be set while the device runs in the matching mode."
     }
   }
 }

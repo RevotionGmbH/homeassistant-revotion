@@ -19,6 +19,7 @@ from __future__ import annotations
 from .descriptors import ConnectDeviceDescriptor
 from .devices.airtronic3 import AIRTRONIC3_DESCRIPTOR
 from .devices.alde import ALDE_DESCRIPTOR
+from .devices.autoterm import AUTOTERM_DESCRIPTOR
 from .devices.can_battery import CAN_BATTERY_DESCRIPTOR
 from .devices.dometic_absorber import ABSORBER_DESCRIPTOR
 from .devices.dometic_freshjet import FRESHJET_DESCRIPTOR
@@ -51,6 +52,8 @@ DEVICE_REGISTRY: dict[int, ConnectDeviceDescriptor] = {
     PHOENIX_CHARGER_DESCRIPTOR.device: PHOENIX_CHARGER_DESCRIPTOR,
     PHOENIX_INVERTER_DESCRIPTOR.device: PHOENIX_INVERTER_DESCRIPTOR,
     CAN_BATTERY_DESCRIPTOR.device: CAN_BATTERY_DESCRIPTOR,
+    # Phase 9: Autoterm Air heater (firmware 0x130, app control since 2026).
+    AUTOTERM_DESCRIPTOR.device: AUTOTERM_DESCRIPTOR,
 }
 
 

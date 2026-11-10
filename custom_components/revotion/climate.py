@@ -21,6 +21,7 @@ import logging
 from typing import Any
 
 from homeassistant.components.climate import (
+    ATTR_HVAC_MODE,
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
@@ -40,7 +41,7 @@ from .connect import (
     resolve_connect_device,
 )
 from .connect.control import ConnectCommandMixin, set_dev_data_path
-from .connect.descriptors import ClimateSpec
+from .connect.descriptors import ClimateSpec, read_block_path
 from .connect.entity import resolve_hvac_mode
 from .const import CONF_BRAIN_MAC, DOMAIN, CapabilityType, RevotionConfigEntry
 from .coordinator import RevotionCoordinator
@@ -100,11 +101,22 @@ class RevotionConnectClimate(
         self._optimistic_hvac_mode: HVACMode | None = None
         self._optimistic_target_temp: float | None = None
         self._optimistic_fan_mode: str | None = None
+        self._optimistic_preset: str | None = None
+        # Preset chosen while the heater is off / not in the preset's hvac mode:
+        # no command is sent, the next switch-on into that hvac mode uses it
+        # (the app's local mode pre-selection, AutotermModeNotifier).
+        self._preselected_preset: str | None = None
+        # Setpoint chosen while the device does not regulate on it (spec
+        # setpoint_mode_values): kept locally and sent with the next start into
+        # a setpoint mode instead of a command the device would ignore.
+        self._pending_target_temp: float | None = None
         brain_mac_normalized = normalize_mac(brain_mac)
         self._attr_unique_id = f"revotion_{brain_mac_normalized}_{self._node_mac}_{cap_index}_{spec.key}"
         self._attr_device_info = {"identifiers": {(DOMAIN, self._node_mac)}}
         # has_entity_name=True: device carries the name, entity is just the field.
         self._attr_name = spec.name
+        if spec.translation_key is not None:
+            self._attr_translation_key = spec.translation_key
         # Static, fully-resolved hvac modes from the spec. Served verbatim by the
         # hvac_modes property when the spec has no hvac_mode_av_flags; otherwise
         # the property filters this list by the per-mode availability flags.
@@ -121,6 +133,9 @@ class RevotionConnectClimate(
         )
         if spec.fan_modes:
             features |= ClimateEntityFeature.FAN_MODE
+        if spec.preset_to_mode_value:
+            features |= ClimateEntityFeature.PRESET_MODE
+            self._attr_preset_modes = list(spec.preset_to_mode_value)
         self._attr_supported_features = features
 
     @property
@@ -207,10 +222,49 @@ class RevotionConnectClimate(
         """Return the setpoint (optimistic value wins until echo)."""
         if self._optimistic_target_temp is not None:
             return self._optimistic_target_temp
+        if self._pending_target_temp is not None:
+            return self._pending_target_temp
         cap = self._find_capability()
         if cap is None:
             return None
         return self._valid_target_temp(read_dev_data_path(cap, self._spec.target_temp_path))
+
+    def _regulating_on_setpoint(self) -> bool:
+        """Return whether a setpoint command would take effect right now.
+
+        Always True for specs without ``setpoint_mode_values``. Otherwise the
+        device must be on and run in one of those modes (Autoterm thermostat).
+        """
+        if not self._spec.setpoint_mode_values:
+            return True
+        return bool(self._current_state_value()) and self._current_mode_value() in self._spec.setpoint_mode_values
+
+    @property
+    def preset_mode(self) -> str | None:
+        """Return the active (or pre-selected) heat preset.
+
+        On in the preset hvac mode -> the reported mode's preset. Otherwise the
+        local pre-selection, else the preset of the mode the device last
+        reported, else the first preset.
+        """
+        if not self._spec.preset_to_mode_value:
+            return None
+        if self._optimistic_preset is not None:
+            return self._optimistic_preset
+        if self._current_state_value():
+            reported = self._spec.mode_value_to_preset.get(self._current_mode_value())
+            if reported is not None:
+                return reported
+        if self._preselected_preset is not None:
+            return self._preselected_preset
+        reported = self._spec.mode_value_to_preset.get(self._current_mode_value())
+        return reported if reported is not None else next(iter(self._spec.preset_to_mode_value))
+
+    def _preset_from_data(self) -> str | None:
+        """Return the preset decoded from dev_data while on (ignoring optimistic)."""
+        if not self._current_state_value():
+            return None
+        return self._spec.mode_value_to_preset.get(self._current_mode_value())
 
     def _valid_target_temp(self, value: Any) -> Any:
         """Replace a setpoint outside min_temp..max_temp by the spec fallback.
@@ -295,6 +349,10 @@ class RevotionConnectClimate(
     def _handle_coordinator_update(self) -> None:
         """Clear optimistic state and command lock once real data confirms it."""
         self._sync_command_state()
+        # Once the device regulates on its setpoint (e.g. started at the wall
+        # panel), its reported value is authoritative again.
+        if self._pending_target_temp is not None and self._spec.setpoint_mode_values and self._regulating_on_setpoint():
+            self._pending_target_temp = None
         super()._handle_coordinator_update()
 
     def _revert_optimistic(self) -> None:
@@ -302,6 +360,7 @@ class RevotionConnectClimate(
         self._optimistic_hvac_mode = None
         self._optimistic_target_temp = None
         self._optimistic_fan_mode = None
+        self._optimistic_preset = None
 
     def _optimistic_confirmed(self) -> bool:
         """Return True once dev_data matches every active optimistic value."""
@@ -309,12 +368,15 @@ class RevotionConnectClimate(
             self._optimistic_hvac_mode is None
             and self._optimistic_target_temp is None
             and self._optimistic_fan_mode is None
+            and self._optimistic_preset is None
         ):
             return True
         cap = self._find_capability()
         if cap is None:
             return False
         if self._optimistic_hvac_mode is not None and self._hvac_mode_from_data() != self._optimistic_hvac_mode:
+            return False
+        if self._optimistic_preset is not None and self._preset_from_data() != self._optimistic_preset:
             return False
         if self._optimistic_target_temp is not None:
             real = read_dev_data_path(cap, self._spec.target_temp_path)
@@ -340,7 +402,24 @@ class RevotionConnectClimate(
         cap = self._find_capability()
         return read_dev_data_path(cap, self._spec.target_temp_path) if cap is not None else None
 
-    def _build_command(self, *, hvac_mode: HVACMode | None, target_temp: float | None) -> dict[str, Any]:
+    def _preset_mode_value(self, hvac_mode: HVACMode) -> int | None:
+        """Return the mode value the current preset selects for ``hvac_mode``.
+
+        Only for the spec's ``preset_hvac`` (Autoterm HEAT: thermostat vs.
+        power); ``None`` -> fall back to ``hvac_to_mode_value``.
+        """
+        if self._spec.preset_hvac is None or hvac_mode.value != self._spec.preset_hvac:
+            return None
+        preset = self.preset_mode
+        return self._spec.preset_to_mode_value.get(preset) if preset is not None else None
+
+    def _build_command(
+        self,
+        *,
+        hvac_mode: HVACMode | None,
+        target_temp: float | None,
+        mode_value: int | None = None,
+    ) -> dict[str, Any]:
         """Build the full control ``dev_data`` for a climate command.
 
         The firmware control decode reads state, mode and target_temp together,
@@ -355,12 +434,16 @@ class RevotionConnectClimate(
 
         if hvac_mode is not None:
             state_value = self._spec.hvac_to_state.get(hvac_mode.value, self._current_state_value())
-            mode_value = self._spec.hvac_to_mode_value.get(hvac_mode.value)
+            if mode_value is None:
+                mode_value = self._preset_mode_value(hvac_mode)
+            if mode_value is None:
+                mode_value = self._spec.hvac_to_mode_value.get(hvac_mode.value)
             if mode_value is None:
                 mode_value = self._current_mode_value()
         else:
             state_value = self._current_state_value()
-            mode_value = self._current_mode_value()
+            if mode_value is None:
+                mode_value = self._current_mode_value()
         set_dev_data_path(dev_data, self._spec.state_path, state_value)
         # Only write the mode field for devices that have one (mode_path set).
         if self._spec.mode_path is not None:
@@ -368,13 +451,21 @@ class RevotionConnectClimate(
 
         if target_temp is not None:
             effective_target = target_temp
+        elif self._pending_target_temp is not None and state_value and mode_value in self._spec.setpoint_mode_values:
+            # Starting into a setpoint mode: carry the locally kept setpoint.
+            effective_target = self._pending_target_temp
         elif state_value:
             # Switching on (or staying on): never send an out-of-range setpoint
             # such as the 0 the Truma CP+ AC reports while off.
             effective_target = self._valid_target_temp(self._current_target_temp())
         else:
             effective_target = self._current_target_temp()
-        if effective_target is not None:
+        # Specs with setpoint_mode_values send the setpoint only into such a
+        # mode -- elsewhere the device ignores it.
+        sends_setpoint = not self._spec.setpoint_mode_values or (
+            bool(state_value) and mode_value in self._spec.setpoint_mode_values
+        )
+        if effective_target is not None and sends_setpoint:
             set_dev_data_path(dev_data, self._spec.target_temp_path, effective_target)
 
         for path, value in self._spec.extra_command_fields.items():
@@ -391,17 +482,63 @@ class RevotionConnectClimate(
         if hvac_mode not in self.hvac_modes:
             _LOGGER.debug("Ignoring unavailable hvac_mode %s for %s", hvac_mode, self.entity_id)
             return
-        await self._publish_connect_command(self._build_command(hvac_mode=hvac_mode, target_temp=None))
+        dev_data = self._build_command(hvac_mode=hvac_mode, target_temp=None)
+        await self._publish_connect_command(dev_data)
         self._optimistic_hvac_mode = hvac_mode
+        self._adopt_sent_setpoint(dev_data)
         self.async_write_ha_state()
+
+    def _adopt_sent_setpoint(self, dev_data: dict[str, Any]) -> None:
+        """Turn a locally kept setpoint into the optimistic one once it was sent."""
+        if self._pending_target_temp is None:
+            return
+        sent = read_block_path(dev_data, self._spec.target_temp_path, None)
+        if sent is not None:
+            self._optimistic_target_temp = float(sent)
+            self._pending_target_temp = None
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set the target temperature by publishing target (+ current state/mode)."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
+        if self._spec.setpoint_mode_values:
+            requested_hvac = kwargs.get(ATTR_HVAC_MODE)
+            if requested_hvac is not None or not self._regulating_on_setpoint():
+                # Keep the setpoint locally; it rides along with the next start
+                # into a setpoint mode (a command now would be ignored).
+                self._pending_target_temp = float(temperature)
+                if requested_hvac is not None:
+                    await self.async_set_hvac_mode(HVACMode(requested_hvac))
+                    return
+                self.async_write_ha_state()
+                return
         await self._publish_connect_command(self._build_command(hvac_mode=None, target_temp=temperature))
         self._optimistic_target_temp = float(temperature)
+        self._pending_target_temp = None
+        self.async_write_ha_state()
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Switch the heat preset (Autoterm thermostat <-> power).
+
+        Running in the preset's hvac mode -> publish the new mode right away
+        (the node switches heat modes mid-run). Otherwise only remember it: the
+        next switch-on into that hvac mode starts with it, so choosing a preset
+        never starts an idle heater by itself.
+        """
+        mode_value = self._spec.preset_to_mode_value.get(preset_mode)
+        if mode_value is None:
+            _LOGGER.debug("Ignoring unknown preset %s for %s", preset_mode, self.entity_id)
+            return
+        self._preselected_preset = preset_mode
+        preset_hvac = self._spec.preset_hvac
+        if preset_hvac is None or self._hvac_mode_from_data() != HVACMode(preset_hvac):
+            self.async_write_ha_state()
+            return
+        dev_data = self._build_command(hvac_mode=HVACMode(preset_hvac), target_temp=None, mode_value=mode_value)
+        await self._publish_connect_command(dev_data)
+        self._optimistic_preset = preset_mode
+        self._adopt_sent_setpoint(dev_data)
         self.async_write_ha_state()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
