@@ -4,6 +4,11 @@ All notable changes to the Revotion Home Assistant integration are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/); the version
 is the release tag and matches `manifest.json` (pre-releases use PEP 440 style, e.g. `0.4.0b1`).
 
+## 0.6.1 — 2026-11-17
+
+### Fixed
+- Autoterm Air heaters: the preset buttons "Thermostat" and "Power" in the thermostat card now show icons (thermostat, flame) instead of two empty dots
+
 ## 0.6.0 — 2026-11-10
 
 ### Added

@@ -1,0 +1,16 @@
+{
+  "entity": {
+    "climate": {
+      "autoterm_heater": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "thermostat": "mdi:thermostat",
+              "power": "mdi:fire"
+            }
+          }
+        }
+      }
+    }
+  }
+}
